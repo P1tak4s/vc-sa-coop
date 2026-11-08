@@ -89,7 +89,32 @@ def parse_report(text):
     return out
 
 
+CLEO_LOG = os.environ.get("CLEO_LOG", r"C:\Program Files (x86)\Steam\steamapps\common\GTA Vice City - The Definitive Edition\Gameface\Binaries\Win64\cleo_redux.log"
+                          if GAME == "vc" else r"C:\Program Files (x86)\Steam\steamapps\common\GTA San Andreas - The Definitive Edition\Gameface\Binaries\Win64\cleo_redux.log")
+cleo_seen = os.path.getsize(CLEO_LOG) if os.path.exists(CLEO_LOG) else 0
+cleo_problems = []
+
+
+def watch_cleo():
+    """New ERROR / timed out / disposed lines of the game's CLEO log: the script died or misbehaves."""
+    global cleo_seen
+    try:
+        size = os.path.getsize(CLEO_LOG)
+        if size < cleo_seen:
+            cleo_seen = 0
+        if size == cleo_seen:
+            return
+        with open(CLEO_LOG, encoding="utf-8", errors="replace") as f:
+            f.seek(cleo_seen); new = f.read(); cleo_seen = size
+        for line in new.splitlines():
+            if any(w in line for w in ("[ERROR]", "timed out", "disposed", "exception")) and "CLEO_TEXT" not in line:
+                cleo_problems.append(line.strip()); say(f"CLEO: {line.strip()}"); note("cleo", text=line.strip())
+    except OSError:
+        pass
+
+
 def pump():
+    watch_cleo()
     """Read everything waiting; returns nothing, fills the globals."""
     global slot, host_slot, revived_by_you, ents_seen
     while True:
@@ -343,7 +368,7 @@ def run_phase(name, seconds, what):
     errs = [float(r[2].get("e", -1)) for r in seen if float(r[2].get("e", -1)) >= 0]
     ok, notes = None, []
     if not seen:
-        ok = False; notes.append("zaidimas nieko nepranese apie robota (vc-coop.js nesiuncia raporto?)")
+        ok = False; notes.append("zaidimas nieko nepranese apie robota" + (" (CLEO: " + cleo_problems[-1][-80:] + ")" if cleo_problems else ""))
     else:
         present = sum(r[2].get("p") == "1" for r in seen) / len(seen)
         avg = sum(errs) / len(errs) if errs else -1
@@ -398,6 +423,8 @@ def write_report():
     lines += ["", "## Žaidimo būsena (paskutinis W raportas)", ""]
     for frm, w in world.items():
         lines.append(f"- žaidimas {frm}: " + ", ".join(f"{k}={v}" for k, v in w.items()))
+    lines += ["", "## CLEO klaidos (skripto lūžiai)", ""]
+    lines += [f"- {x}" for x in cleo_problems[-20:]] or ["- nėra"]
     lines += ["", "## Įvykiai (pjūviai, misijos, tekstai, oras)", ""]
     for t, frm, kind, text in heard[-40:]:
         lines.append(f"- {time.strftime('%H:%M:%S', time.localtime(t))} iš {frm}: {EV_NAMES.get(kind, kind)} `{text}`")
