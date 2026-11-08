@@ -24,6 +24,7 @@ pub struct CoopMenu {
     pw: String,
     join_tab: bool,
     fonts_ok: bool,
+    last_status: i32,
 }
 
 fn status_text() -> &'static str {
@@ -214,7 +215,9 @@ impl ImguiRenderLoop for CoopMenu {
                 }
                 y += ROW_H;
 
-                if !join_tab && row_bg(y, 6, "Bandymas su robotu (be draugo)") && !busy {
+                if !join_tab && row_bg(y, 6, "Bandymas su robotu (be draugo)") {
+                    // leave any session first, then host over UDP so the test bot can join
+                    crate::leave_session();
                     if crate::coop_host() == 1 {
                         crate::log_line("test host started for the bot");
                     }
@@ -232,6 +235,12 @@ impl ImguiRenderLoop for CoopMenu {
         if go && can {
             crate::start_steam_session(!self.join_tab, self.name.trim().to_string(), self.pw.clone());
         }
+        // a session that just connected: back to the game, like Saints Row 2
+        let status = crate::status_code();
+        if self.last_status == 1 && status == 2 {
+            close = true;
+        }
+        self.last_status = status;
         if close || ui.is_key_pressed(imgui::Key::Escape) {
             OPEN.store(false, Ordering::SeqCst);
         }

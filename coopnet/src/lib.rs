@@ -548,6 +548,20 @@ pub extern "C" fn coop_my_skin() -> i64 {
     overlay::SKIN.load(std::sync::atomic::Ordering::SeqCst) as i64
 }
 
+/// Stop the current session (Steam or UDP) and wait for its thread to let go.
+pub(crate) fn leave_session() {
+    let busy = matches!(shared().lock().unwrap().status, 1 | 2);
+    if !busy {
+        return;
+    }
+    shared().lock().unwrap().stop = true;
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let mut s = shared().lock().unwrap();
+    s.status = 0;
+    s.host = false;
+    s.peers = Default::default();
+}
+
 pub(crate) fn is_host() -> bool {
     shared().lock().unwrap().host
 }
