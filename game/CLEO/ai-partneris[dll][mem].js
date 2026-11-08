@@ -112,7 +112,19 @@ function keepUp(me, now) {
 
 // H: the partner drives. Near an empty car (your stolen one, any): it takes the wheel, you the passenger seat, and
 // it cruises the streets. H again: it stops and you both get out.
-let chauffeur = null, hWas = false;
+let chauffeur = null, hWas = false, dest = null;
+const RADAR = 0x542A7B0; // radar trace, 250 x 0x30 (Steam build 1.0.113.49697469)
+const GROVE = { x: 2495, y: -1680, z: 13.3 };
+// the map waypoint the player placed: a radar entry in use with the waypoint sprite (41)
+function waypoint() {
+  for (let i = 0; i < 250; i++) {
+    const e = RADAR + i * 0x30;
+    if (!(Memory.ReadU8(e + 0x29, false, true) & 2)) continue;
+    if (Memory.ReadU8(e + 0x28, false, true) !== 41) continue;
+    return { x: Memory.ReadFloat(e + 8, false, true), y: Memory.ReadFloat(e + 12, false, true), z: Memory.ReadFloat(e + 16, false, true) };
+  }
+  return null;
+}
 function chauffeurKey(me) {
   const down = Pad.IsKeyPressed(72); // H
   const press = down && !hWas;
@@ -138,12 +150,13 @@ function chauffeurKey(me) {
     if (ped.isInAnyCar()) { const q = ped.getCoordinates(); ped.warpFromCarToCoord(q.x, q.y, q.z); }
     ped.warpIntoCar(car);
     me.warpIntoCarAsPassenger(car, 0);
-    car.setCruiseSpeed(22);
-    car.setDrivingStyle(2); // keeps to the road
-    car.wanderRandomly();
+    dest = waypoint() || GROVE;
+    car.setCruiseSpeed(45);   // in a hurry
+    car.setDrivingStyle(2);   // around other cars, keeps to the roads
+    car.gotoCoordinates(dest.x, dest.y, dest.z);
     chauffeur = car;
     action = "drive";
-    showTextBox("AI: vairuoju. H - sustoti");
+    showTextBox(dest === GROVE ? "AI: vezu i Grove Street. H - sustoti" : "AI: vezu i tavo taska. H - sustoti");
   } catch (e) { log(`[ai] H: ${e}`); }
 }
 
@@ -162,7 +175,15 @@ while (true) {
   if (!ped) { spawn(me); continue; }
   try { if (ped.isGroupMember(player.getGroup())) ped.removeFromGroup(); } catch (e) {} // older builds put it there
   chauffeurKey(me);
-  if (chauffeur) { if (!Car.DoesExist(chauffeur) || !me.isInAnyCar()) { chauffeur = null; action = "follow"; } continue; }
+  if (chauffeur) {
+    if (!Car.DoesExist(chauffeur) || !me.isInAnyCar()) { chauffeur = null; action = "follow"; continue; }
+    try {
+      if (dest && d2(chauffeur.getCoordinates(), dest) < 25 * 25) {
+        chauffeur.setCruiseSpeed(0); chauffeur.setMission(11); dest = null; showTextBox("AI: atvykome");
+      }
+    } catch (e) {}
+    continue;
+  }
   // too far behind (e.g. CJ drove off alone): catch up next to CJ
   if (!me.isInAnyCar() && d2(me.getCoordinates(), ped.getCoordinates()) > 150 * 150) {
     const p = me.getCoordinates(); ped.setCoordinates(p.x + 2, p.y + 2, p.z);
