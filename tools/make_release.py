@@ -25,7 +25,7 @@ for name in ("repak.exe", "MenuPatch.exe", "THIRD_PARTY.txt"):
     shutil.copy(os.path.join(OLD_EXTRA, name), os.path.join(OUT, "extra"))
 shutil.copytree(os.path.join(OLD_EXTRA, "reshade"), os.path.join(OUT, "extra", "reshade"))
 shutil.copy(os.path.join(ROOT, "docs", "README.txt"), OUT)
-zpath = os.path.join(ROOT, "dist", f"VC-SA-Coop-{version}.zip")
+zpath = os.path.join(ROOT, "dist", f"VC-SA-Coop-{version}-windows-x64.zip")
 with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
     for base, _, files in os.walk(OUT):
         for f in files:

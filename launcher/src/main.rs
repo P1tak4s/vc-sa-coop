@@ -154,6 +154,14 @@ fn docs_dir(g: &GameInfo) -> Option<PathBuf> {
 fn main() -> eframe::Result {
     // sa-coop.exe --install sa|vc: install without the window, the result goes to %LOCALAPPDATA%\<game>-de-coop\install.log
     let args: Vec<String> = std::env::args().collect();
+    // VC-SA-Coop.exe --write-icon <file.png>: the app icon as a 256 px PNG (for the README)
+    if let Some(i) = args.iter().position(|a| a == "--write-icon") {
+        let px = icon::draw(256);
+        if let (Some(path), Some(img)) = (args.get(i + 1), image::RgbaImage::from_raw(256, 256, px)) {
+            let _ = img.save(path);
+        }
+        return Ok(());
+    }
     // sa-coop.exe --valdymas vc 0|1 (original / better car handling)
     if let Some(i) = args.iter().position(|a| a == "--valdymas") {
         let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
