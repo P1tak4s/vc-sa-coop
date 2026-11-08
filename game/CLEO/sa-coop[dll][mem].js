@@ -23,10 +23,10 @@ try {
   exit("setup failed");
 }
 
-// proto::State, 72 bytes
-const SIZE = 72;
+// proto::State, 80 bytes
+const SIZE = 80;
 const F = { x: 0, y: 4, z: 8, heading: 12, vx: 16, vy: 20, vz: 24, qx: 28, qy: 32, qz: 36, qw: 40, carSpeed: 44 };
-const I = { inCar: 48, carModel: 52, health: 56, carHealth: 60, interior: 64, clock: 68 };
+const I = { inCar: 48, carModel: 52, health: 56, carHealth: 60, interior: 64, clock: 68, weapon: 72, flags: 76 };
 const mine = Memory.Allocate(SIZE);
 const theirs = Memory.Allocate(SIZE);
 const codeBuf = Memory.Allocate(32);
@@ -165,6 +165,13 @@ function writeMine(me) {
   Memory.WriteI32(mine + I.interior, area, false, false);
   const t = Clock.GetTimeOfDay();
   Memory.WriteI32(mine + I.clock, t.hours * 60 + t.minutes, false, false);
+  let weapon = 0, flags = 0;
+  try { weapon = me.getCurrentWeapon(); } catch (e) {}
+  try { if (player.isTargetingAnything()) flags |= 1; } catch (e) {}
+  try { if (me.isShooting()) flags |= 2; } catch (e) {}
+  try { flags |= Math.min(6, player.storeWantedLevel()) << 8; } catch (e) {}
+  Memory.WriteI32(mine + I.weapon, weapon, false, false);
+  Memory.WriteI32(mine + I.flags, flags, false, false);
   api.coop_send(mine);
 }
 
@@ -266,13 +273,17 @@ function driveRemote(r, s, now) {
   r.car.setQuaternion(s.qx, s.qy, s.qz, s.qw);
   if (err > 2) {
     r.car.setCoordinatesNoOffset(tx, ty, tz); // too far off: put it where it should be
-    r.car.setForwardSpeed(speed);
+    const fx0 = 2 * (s.qx * s.qy - s.qw * s.qz), fy0 = 1 - 2 * (s.qx * s.qx + s.qz * s.qz);
+    r.car.setForwardSpeed(r.vx * fx0 + r.vy * fy0 < 0 ? -speed : speed);
     return;
   }
   // close enough: the game's physics drives it (wheels turn); catch up or fall back through the speed
+  // which way the car faces (quaternion applied to +y): moving against it is reverse
+  const fx = 2 * (s.qx * s.qy - s.qw * s.qz), fy = 1 - 2 * (s.qx * s.qx + s.qz * s.qz);
+  const sign = r.vx * fx + r.vy * fy < 0 ? -1 : 1;
   let along = 0;
   if (speed > 0.5) along = (ex * r.vx + ey * r.vy) / speed;
-  r.car.setForwardSpeed(Math.max(0, speed + along * 1.5));
+  r.car.setForwardSpeed(sign * Math.max(0, speed + along * 1.5));
 }
 
 function rideRemote(r, s, mySlot, me) {
@@ -332,6 +343,33 @@ function downRemote(r, s, slot, me) {
   }
 }
 
+// their gun in their copy's hands; shooting is shown as shots straight ahead (no hits sync yet)
+function armRemote(r, s, now) {
+  if (s.weapon !== r.weapon) {
+    r.weapon = s.weapon;
+    try {
+      if (s.weapon > 0) {
+        const model = Weapon.GetModel(s.weapon);
+        if (model > 0) loadModel(model);
+        r.ped.giveWeapon(s.weapon, 9999);
+        if (model > 0) Streaming.MarkModelAsNoLongerNeeded(model);
+      }
+      r.ped.setCurrentWeapon(s.weapon);
+    } catch (e) { log(`[sa-coop] weapon ${s.weapon}: ${e}`); }
+  }
+  if ((s.flags & 2) && s.inCar === 0 && s.weapon > 15 && now - (r.lastShot || 0) > 300) {
+    const h = s.heading * Math.PI / 180;
+    try { Task.ShootAtCoord(r.ped, s.x - Math.sin(h) * 25, s.y + Math.cos(h) * 25, s.z + 0.5, 350); } catch (e) {}
+    r.lastShot = now;
+  }
+}
+
+// notoriety is shared: if a friend has more stars, we get them too (never lowered here)
+function shareWanted(s) {
+  const theirs = (s.flags >> 8) & 0xff;
+  try { if (theirs > player.storeWantedLevel()) player.alterWantedLevel(theirs); } catch (e) {}
+}
+
 // the lowest slot keeps time for everyone; a jump of more than 2 minutes is corrected
 function followClock(minutes) {
   if (minutes < 0 || minutes >= 1440) return;
@@ -358,6 +396,8 @@ function syncRemotes(me, mySlot, now) {
     try {
       if (r.area !== s.interior) { r.area = s.interior; r.ped.setAreaVisible(s.interior); if (r.car) r.car.setAreaVisible(s.interior); }
       if (slot < mySlot || mySlot < 0) followClock(s.clock);
+      shareWanted(s);
+      if (s.health >= 0) armRemote(r, s, now);
       if (s.health < 0) { downRemote(r, s, slot, me); continue; }
       if (r.down) { r.down = false; try { r.ped.clearTasksImmediately(); } catch (e) {} }
       if (s.inCar === 1) driveRemote(r, s, now);

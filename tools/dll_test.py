@@ -17,7 +17,7 @@ srv = ("127.0.0.1", (v >> 32) & 0xFFFF); key = v & 0xFFFFFFFF
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(0.05)
 M = b"SDC1"
 s.sendto(M + bytes([1]) + struct.pack("<I", key) + b"Botas".ljust(16, b"\0"), srv)
-mine = struct.pack("<12f6i", 2000, 1000, 10, 90, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 100, 0, 0, 720)
+mine = struct.pack("<12f8i", 2000, 1000, 10, 90, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 100, 0, 0, 720, 0, 0)
 got_dll_state = None; bot_slot = None
 t0 = time.time()
 while time.time() - t0 < 5:
@@ -29,9 +29,9 @@ while time.time() - t0 < 5:
     except socket.timeout:
         pass
     if bot_slot is not None:
-        st = struct.pack("<12f6i", 2010, 1005, 10, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 77, 0, 0, 720)
+        st = struct.pack("<12f8i", 2010, 1005, 10, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 77, 0, 0, 720, 0, 0)
         s.sendto(M + bytes([4]) + st, srv)
-out = ctypes.create_string_buffer(72)
+out = ctypes.create_string_buffer(80)
 ok = dll.coop_get(bot_slot if bot_slot is not None else 1, out)
 peer = struct.unpack_from("<3f", out.raw) if ok else None
 nb = ctypes.create_string_buffer(16); nl = dll.coop_name(bot_slot if bot_slot is not None else 1, nb, 16)

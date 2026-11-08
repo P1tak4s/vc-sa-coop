@@ -40,9 +40,13 @@ pub struct State {
     pub interior: i32,
     /// time of day in minutes (0..1439); the player in the lowest slot sets everyone's clock
     pub clock: i32,
+    /// weapon type in hand (0 = fists)
+    pub weapon: i32,
+    /// bit 0 aiming, bit 1 shooting, bits 8..15 wanted level (0..6)
+    pub flags: i32,
 }
 
-pub const STATE_SIZE: usize = 72;
+pub const STATE_SIZE: usize = 80;
 const _: () = assert!(std::mem::size_of::<State>() == STATE_SIZE);
 
 impl State {
@@ -52,7 +56,7 @@ impl State {
         for (i, v) in f.iter().enumerate() {
             out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
         }
-        let n = [self.in_car, self.car_model, self.health, self.car_health, self.interior, self.clock];
+        let n = [self.in_car, self.car_model, self.health, self.car_health, self.interior, self.clock, self.weapon, self.flags];
         for (i, v) in n.iter().enumerate() {
             out[48 + i * 4..52 + i * 4].copy_from_slice(&v.to_le_bytes());
         }
@@ -68,12 +72,13 @@ impl State {
         let s = State {
             x: f(0), y: f(1), z: f(2), heading: f(3), vx: f(4), vy: f(5), vz: f(6),
             qx: f(7), qy: f(8), qz: f(9), qw: f(10), car_speed: f(11),
-            in_car: n(0), car_model: n(1), health: n(2), car_health: n(3), interior: n(4), clock: n(5),
+            in_car: n(0), car_model: n(1), health: n(2), car_health: n(3), interior: n(4), clock: n(5), weapon: n(6), flags: n(7),
         };
         // a peer could send anything: refuse what would hurt the game (NaN positions, bogus models)
         let finite = [s.x, s.y, s.z, s.heading, s.vx, s.vy, s.vz, s.qx, s.qy, s.qz, s.qw, s.car_speed].iter().all(|v| v.is_finite());
         let in_world = s.x.abs() < 6000.0 && s.y.abs() < 6000.0 && s.z > -200.0 && s.z < 2000.0
-            && (0..=255).contains(&s.interior) && (0..1440).contains(&s.clock);
+            && (0..=255).contains(&s.interior) && (0..1440).contains(&s.clock)
+            && (0..=46).contains(&s.weapon) && (s.flags >> 8 & 0xff) <= 6;
         let model_ok = match s.in_car {
             0 => true,
             1 => (400..=611).contains(&s.car_model),
