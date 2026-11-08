@@ -151,6 +151,19 @@ fn docs_dir(g: &GameInfo) -> Option<PathBuf> {
 fn main() -> eframe::Result {
     // sa-coop.exe --install sa|vc: install without the window, the result goes to %LOCALAPPDATA%\<game>-de-coop\install.log
     let args: Vec<String> = std::env::args().collect();
+    // sa-coop.exe --valdymas vc 0|1 (original / better car handling)
+    if let Some(i) = args.iter().position(|a| a == "--valdymas") {
+        let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
+        let better = args.get(i + 2).is_none_or(|v| v != "0");
+        let line = match find_game(g) {
+            Some(dir) => set_handling(g, &dir, better).unwrap_or_else(|e| e),
+            None => format!("{} nerastas", g.name),
+        };
+        let dir = data_dir(g);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("valdymas.log"), line);
+        return Ok(());
+    }
     // sa-coop.exe --grafika sa|vc 0..3 (Išjungta, Paprasta, Gražu, Maksimum)
     if let Some(i) = args.iter().position(|a| a == "--grafika") {
         let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
@@ -312,6 +325,93 @@ fn extras(g: &GameInfo, win64: &Path, log: &mut Vec<String>) {
     }
 }
 
+// ---- better car handling (Vice City): the game's own handling.cfg, retuned, packed as ~mods\coop_handling_P.pak ----
+const HANDLING_REL: &str = "Gameface/Content/OriginalData/ViceCity/data/handling.cfg";
+
+fn handling_pak(win64: &Path) -> Option<PathBuf> {
+    Some(win64.parent()?.parent()?.join(r"Content\Paks\~mods\coop_handling_P.pak"))
+}
+
+/// One car line of VC's handling.cfg (33 fields, see the file's header): more grip, stronger brakes with ABS, firmer
+/// suspension, a lower centre of mass, a little more pull. Bikes, boats, helicopters and planes are left alone.
+fn retune_line(line: &str) -> Option<String> {
+    let mut f: Vec<String> = line.split_whitespace().map(String::from).collect();
+    if f.len() != 33 || !f[0].chars().next()?.is_ascii_alphabetic() {
+        return None;
+    }
+    let flags = u32::from_str_radix(&f[30], 16).ok()?;
+    if flags & 0xF0000 != 0 {
+        return None; // IS_BIKE / IS_HELI / IS_PLANE / IS_BOAT
+    }
+    let num = |s: &str| s.parse::<f32>().ok();
+    let (com_z, traction, loss, accel, brake, damping) = (num(&f[7])?, num(&f[9])?, num(&f[10])?, num(&f[14])?, num(&f[17])?, num(&f[22])?);
+    let mut set = |i: usize, v: f32| f[i] = format!("{v:.3}");
+    set(7, com_z - 0.10);
+    set(9, (traction * 1.2).min(2.0));
+    set(10, (loss * 1.1).min(1.0));
+    set(14, (accel * 1.1).min(10.0));
+    set(17, (brake * 1.25).min(10.0));
+    set(22, (damping * 1.3).min(1.0));
+    f[19] = "1".into(); // ABS
+    Some(f.join(" "))
+}
+
+fn retune_handling(text: &str) -> (String, usize) {
+    let mut n = 0;
+    let out: Vec<String> = text
+        .lines()
+        .map(|l| match retune_line(l) {
+            Some(t) => {
+                n += 1;
+                t
+            }
+            None => l.to_string(),
+        })
+        .collect();
+    (out.join("\r\n") + "\r\n", n)
+}
+
+/// better = true: build the pak from this PC's own handling.cfg; false: remove it.
+fn set_handling(g: &GameInfo, win64: &Path, better: bool) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    if !is_vc(g) {
+        return Err("valdymo pataisa kol kas tik Vice City".into());
+    }
+    let pak_out = handling_pak(win64).ok_or("nerastas žaidimo aplankas")?;
+    if !better {
+        let _ = std::fs::remove_file(&pak_out);
+        return Ok("Valdymas: originalus (įsigalios kitą kartą paleidus žaidimą)".into());
+    }
+    let repak = bundle_dir().with_file_name("extra").join("repak.exe");
+    let gameface = win64.parent().and_then(|p| p.parent()).ok_or("nerastas Gameface")?;
+    let pak = gameface.join(r"Content\Paks\pakchunk0-WindowsNoEditor.pak");
+    let o = std::process::Command::new(&repak).arg("get").arg(&pak).arg(HANDLING_REL).creation_flags(0x0800_0000).output().map_err(|e| e.to_string())?;
+    if !o.status.success() || o.stdout.len() < 1000 {
+        return Err(format!("nepavyko paimti handling.cfg: {}", String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    let (text, n) = retune_handling(&String::from_utf8_lossy(&o.stdout));
+    let tmp = std::env::temp_dir().join(format!("{}-handling", g.data));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let file = tmp.join("src").join(HANDLING_REL);
+    std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&file, text).map_err(|e| e.to_string())?;
+    let out = tmp.join("coop_handling_P.pak");
+    let st = std::process::Command::new(&repak)
+        .args(["pack", "--version", "V11", "--mount-point", "../../../"])
+        .arg(tmp.join("src"))
+        .arg(&out)
+        .creation_flags(0x0800_0000)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !st.success() {
+        return Err("repak pack nepavyko".into());
+    }
+    std::fs::create_dir_all(pak_out.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::copy(&out, &pak_out).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(format!("Valdymas: geresnis, {n} mašinų (įsigalios kitą kartą paleidus žaidimą)"))
+}
+
 fn installed(g: &GameInfo, game: &Path) -> bool {
     ["version.dll", "cleo_redux64.asi", "coopnet64.asi", g.script].iter().all(|f| game.join(f).is_file())
 }
@@ -428,6 +528,20 @@ impl eframe::App for App {
                     }
                 }
             }
+            if is_vc(g) {
+                if let Some(dir) = self.games[self.which].clone() {
+                    let better = handling_pak(&dir).is_some_and(|p| p.is_file());
+                    ui.horizontal(|ui| {
+                        ui.label("Mašinų valdymas:");
+                        for (on, name) in [(false, "Originalus"), (true, "Geresnis")] {
+                            if ui.selectable_label(better == on, name).clicked() && better != on {
+                                let m = set_handling(g, &dir, on).unwrap_or_else(|e| e);
+                                self.msg.push(m);
+                            }
+                        }
+                    });
+                }
+            }
             match graphics_level(g) {
                 None => {
                     ui.small("Grafika: tavo paties Engine.ini (nekeičiamas)");
@@ -499,5 +613,23 @@ impl eframe::App for App {
                 ui.small(m);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retunes_cars_only() {
+        let car = "INFERNUS        1500.0 1.9 4.6 1.3 0.0 0.0 -0.25 70  0.80 0.85 0.50 5 240.0 30.0 R P 11.0  0.51 0 30.0  1.5  0.10 0.0  0.27 35000 0.25 -0.10 0.5  0.4		40002004	1  1";
+        let t = retune_line(car).unwrap();
+        let f: Vec<&str> = t.split_whitespace().collect();
+        assert_eq!(f[9], "0.960");
+        assert_eq!(f[19], "1");
+        assert_eq!(f[7], "-0.350");
+        let bike = "PCJ600          200.0  0.8 2.1 1.1 0.0 0.05 -0.1 103 1.4  0.85 0.48 5 190.0 35.0 R P 15.0  0.50 0 30.0  1.2  0.15 0.0  0.10 10000 0.20 -0.10 0.55 0.0		10000		1  1";
+        assert!(retune_line(bike).is_none());
+        assert!(retune_line("; comment").is_none());
     }
 }
