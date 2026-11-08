@@ -51,6 +51,44 @@ const GAMES: [GameInfo; 2] = [
     },
 ];
 
+/// Graphics levels: Engine.ini files written to Documents\Rockstar Games\<game>\Config\WindowsNoEditor.
+/// Only a file of ours (its first line says "Co-op graphics") is ever replaced or removed.
+const GRAPHICS: [(&str, &str); 4] = [
+    ("Išjungta", ""),
+    ("Paprasta", include_str!("../../game-config/Engine.ini")),
+    ("Gražu", include_str!("../../game-config/Engine-grazu.ini")),
+    ("Maksimum", include_str!("../../game-config/Engine-maksimum.ini")),
+];
+
+fn engine_ini(g: &GameInfo) -> Option<PathBuf> {
+    docs_dir(g).map(|d| d.join(r"Config\WindowsNoEditor\Engine.ini"))
+}
+
+/// Which level is in place: Some(index) for ours, None for the player's own file.
+fn graphics_level(g: &GameInfo) -> Option<usize> {
+    let Some(ini) = engine_ini(g) else { return Some(0) };
+    let Ok(text) = std::fs::read_to_string(&ini) else { return Some(0) };
+    if !text.lines().next().is_some_and(|l| l.contains("Co-op graphics")) {
+        return None;
+    }
+    GRAPHICS.iter().position(|(_, t)| !t.is_empty() && t.replace("\r\n", "\n").trim() == text.replace("\r\n", "\n").trim()).or(Some(1))
+}
+
+fn set_graphics(g: &GameInfo, level: usize) -> Result<String, String> {
+    let ini = engine_ini(g).ok_or("nerastas Documents aplankas")?;
+    if graphics_level(g).is_none() {
+        return Err(format!("{} yra tavo paties: nekeičiu (ištrink jį, jei nori mūsų nustatymų)", ini.display()));
+    }
+    let (name, text) = GRAPHICS[level.min(GRAPHICS.len() - 1)];
+    if text.is_empty() {
+        let _ = std::fs::remove_file(&ini);
+    } else {
+        std::fs::create_dir_all(ini.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(&ini, text).map_err(|e| e.to_string())?;
+    }
+    Ok(format!("Grafika: {name} (įsigalios kitą kartą paleidus žaidimą)"))
+}
+
 fn is_vc(g: &GameInfo) -> bool {
     g.exe == "ViceCity.exe"
 }
@@ -75,6 +113,16 @@ fn docs_dir(g: &GameInfo) -> Option<PathBuf> {
 fn main() -> eframe::Result {
     // sa-coop.exe --install sa|vc: install without the window, the result goes to %LOCALAPPDATA%\<game>-de-coop\install.log
     let args: Vec<String> = std::env::args().collect();
+    // sa-coop.exe --grafika sa|vc 0..3 (Išjungta, Paprasta, Gražu, Maksimum)
+    if let Some(i) = args.iter().position(|a| a == "--grafika") {
+        let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
+        let level = args.get(i + 2).and_then(|v| v.parse().ok()).unwrap_or(1);
+        let line = set_graphics(g, level).unwrap_or_else(|e| e);
+        let dir = data_dir(g);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("grafika.log"), line);
+        return Ok(());
+    }
     if let Some(i) = args.iter().position(|a| a == "--install") {
         let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
         let lines = match find_game(g) {
@@ -200,9 +248,10 @@ fn extras(g: &GameInfo, win64: &Path, log: &mut Vec<String>) {
         Err(e) => log.push(format!("„co-op“ meniu įrašo nepavyko sukurti: {e}")),
     }
     if let Some(docs) = docs_dir(g).map(|d| d.join(r"Config\WindowsNoEditor")) {
-        let ini = docs.join("Engine.ini");
-        if !ini.exists() && extra.join("Engine.ini").is_file() && std::fs::create_dir_all(&docs).is_ok() && std::fs::copy(extra.join("Engine.ini"), &ini).is_ok() {
-            log.push("Grafikos patobulinimai įjungti (Engine.ini).".into());
+        if !docs.join("Engine.ini").exists() {
+            if let Ok(l) = set_graphics(g, 1) {
+                log.push(l);
+            }
         }
     }
     let fonts = data_dir(g).join("fonts");
@@ -339,6 +388,22 @@ impl eframe::App for App {
                             Err(e) => self.msg.push(e),
                         }
                     }
+                }
+            }
+            match graphics_level(g) {
+                None => {
+                    ui.small("Grafika: tavo paties Engine.ini (nekeičiamas)");
+                }
+                Some(cur) => {
+                    ui.horizontal(|ui| {
+                        ui.label("Grafika:");
+                        for (i, (name, _)) in GRAPHICS.iter().enumerate() {
+                            if ui.selectable_label(cur == i, *name).clicked() && cur != i {
+                                let m = set_graphics(g, i).unwrap_or_else(|e| e);
+                                self.msg.push(m);
+                            }
+                        }
+                    });
                 }
             }
             ui.separator();
