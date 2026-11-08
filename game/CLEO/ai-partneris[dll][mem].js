@@ -1,5 +1,5 @@
 /// <reference path=".config/sa.d.ts" />
-// AI partner: a Grove Street gang member in your group (the game makes it follow you, get in your car and fight),
+// AI partner: a Grove Street gang member that follows you, rides with you, drives (H) and fights,
 // with TypeSafe Jev choosing what it does every few seconds from a short description of the situation.
 // Switched on in the co-op menu ("AI partneris"). Talks to coopnet64.asi (Jev runs there, off the game thread).
 
@@ -36,7 +36,7 @@ function spawn(me) {
   Streaming.MarkModelAsNoLongerNeeded(MODEL);
   try { ped.setHealth(200); } catch (e) {}
   try { ped.giveWeapon(WEAPON, AMMO); ped.setCurrentWeapon(WEAPON); } catch (e) {}
-  try { player.getGroup().setMember(ped); } catch (e) { log(`[ai] group: ${e}`); }
+  // not in the player's group: its AI would pull the partner out of the driver's seat (we follow by ourselves)
   try { blip = Blip.AddForChar(ped); blip.setAsFriendly(true); } catch (e) {}
   action = "follow";
   log("[ai] partner spawned");
@@ -160,6 +160,7 @@ while (true) {
     despawn(); deadAt = 0;
   }
   if (!ped) { spawn(me); continue; }
+  try { if (ped.isGroupMember(player.getGroup())) ped.removeFromGroup(); } catch (e) {} // older builds put it there
   chauffeurKey(me);
   if (chauffeur) { if (!Car.DoesExist(chauffeur) || !me.isInAnyCar()) { chauffeur = null; action = "follow"; } continue; }
   // too far behind (e.g. CJ drove off alone): catch up next to CJ
