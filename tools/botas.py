@@ -6,7 +6,7 @@ import math, os, socket, struct, sys, time
 MODE = sys.argv[1] if len(sys.argv) > 1 else ""
 SKIN = int(os.environ.get("SKIN", "1"))  # 1 = Sweet: tests the story-character look
 DRIVE = MODE == "masina"
-down = MODE == "suzeistas"; you_down_since = None
+down = MODE == "suzeistas"; you_down_since = None; rider_since = None
 
 CODE = os.environ.get("KODAS", "")
 if CODE:  # in-game host (F9): the code from the screen; the bot runs on the host's PC, so 127.0.0.1
@@ -28,6 +28,8 @@ while True:
         if d[:4] == MAGIC and d[4] == 3: print("serveris nepriėmė"); break
         if d[:4] == MAGIC and d[4] == 4:
             if center is None: center = struct.unpack_from("<3f", d, 6); print("tavo vieta", center)
+            if rider_since is None and struct.unpack_from("<i", d, 6 + 48)[0] == 2:
+                rider_since = time.time(); print("tu sedi, vaziuojam")
             if struct.unpack_from("<i", d, 6 + 56)[0] < 0:  # you are down
                 you_down_since = you_down_since or time.time()
                 if time.time() - you_down_since > 3:
@@ -45,7 +47,12 @@ while True:
     if slot is None:
         s.sendto(MAGIC + bytes([1]) + struct.pack("<I", key) + b"Botas".ljust(16, b"\0"), srv); time.sleep(0.5); continue
     if center is None: continue
-    if MODE == "stovi":  # in the car, parked 4 m east of you: for testing G (ride along)
+    if MODE == "tiesiai":  # drive north at 8 m/s from where you are, stop after 25 s (passenger test)
+        if rider_since is None: t, v = 0.0, 0.0  # wait in place until you sit in (G)
+        else: t = min(time.time() - rider_since, 25.0); v = 8.0 if t < 25 else 0.0
+        st = struct.pack("<12f8i", center[0], center[1] + 8.0 * t, center[2] + 0.3, 0, 0, 0, 0, 0, 0, 0, 1, v,
+                         1, 411, 100, 1000, 0, 720, 0, SKIN << 16)
+    elif MODE == "stovi":  # in the car, parked 4 m east of you: for testing G (ride along)
         st = struct.pack("<12f8i", center[0] + 4, center[1], center[2] + 0.5, 0, 0, 0, 0, 0, 0, 0, 1, 0,
                          1, 411, 100, 1000, 0, 720, 0, SKIN << 16)
     elif DRIVE:

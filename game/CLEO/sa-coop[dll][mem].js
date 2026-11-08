@@ -311,6 +311,18 @@ function driveRemote(r, s, now) {
   let along = 0;
   if (speed > 0.5) along = (ex * r.vx + ey * r.vy) / speed;
   r.car.setForwardSpeed(sign * Math.max(0, speed + along * 1.5));
+  // a driver with nothing to do holds the handbrake (rear wheels locked): give it a drive towards a point ahead
+  if (now - (r.lastDrive || 0) > 300) {
+    r.lastDrive = now;
+    try {
+      if (speed > 0.5 && sign > 0) {
+        r.car.setCruiseSpeed(Math.max(10, speed * 3.6));
+        r.car.gotoCoordinatesAccurate(tx + fx * 25, ty + fy * 25, tz);
+      } else {
+        r.car.setMission(0); // standing or reversing: no AI driving
+      }
+    } catch (e) {}
+  }
 }
 
 function rideRemote(r, s, mySlot, me) {
