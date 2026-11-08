@@ -454,15 +454,12 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
             // the "co-op" entry of the game's menus, then the menu drawn into the game (DX12, else DX11)
             overlay::hook_menu();
             let hinst = hudhook::windows::Win32::Foundation::HINSTANCE(module as isize);
-            // one renderer only (both hook the same Present): D3D12Core.dll appears once the game makes a DX12 device
-            let mut dx12 = false;
-            for _ in 0..300 {
-                if !windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(dialog::wide("D3D12Core.dll").as_ptr()).is_null() {
-                    dx12 = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
+            // one renderer only (both hook the same Present). DX12 hooks installed but never drew on 11-08, so DX11
+            // is the default; %LOCALAPPDATA%\sa-de-coopenderer.txt = "dx12" switches without a rebuild.
+            let choice = std::env::var_os("LOCALAPPDATA")
+                .and_then(|d| std::fs::read_to_string(std::path::PathBuf::from(d).join("sa-de-coop").join("renderer.txt")).ok())
+                .unwrap_or_default();
+            let dx12 = choice.trim().eq_ignore_ascii_case("dx12");
             log_line(&format!("overlay: starting, {}", if dx12 { "DX12" } else { "DX11" }));
             let b = hudhook::Hudhook::builder();
             let b = if dx12 {
