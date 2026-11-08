@@ -18,6 +18,7 @@ const ID_JOIN: i32 = 104;
 const ID_STATUS: i32 = 105;
 const TIMER: usize = 1;
 
+#[allow(dead_code)]
 pub(crate) fn wide(s: &str) -> Vec<u16> {
     w(s)
 }
