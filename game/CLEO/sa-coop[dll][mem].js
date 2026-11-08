@@ -652,14 +652,19 @@ function onMissionAddr() {
 function lockGuestStory() {
   const a = onMissionAddr();
   if (!a) return;
-  if (isGuest()) {
+  // inside a building (a safehouse with its save disk) the lock is off, so the guest can save its own game
+  let inside = false;
+  try { inside = player.getChar().getAreaVisible() !== 0; } catch (e) {}
+  if (isGuest() && !inside) {
     if (Memory.ReadI32(a, false, true) !== 1) Memory.WriteI32(a, 1, false, true);
-    if (!guestLocked) { guestLocked = true; say("SA Co-op: zaidi draugo istorija. Tavo misijos laukia, kol atsijungsi"); }
+    if (!guestLocked) { guestLocked = true; say("SA Co-op: zaidi draugo istorija. Issaugoti gali savo namuose"); }
   } else if (guestLocked) {
     guestLocked = false;
     Memory.WriteI32(a, 0, false, true);
-    for (const b of guestBlips) { try { b.remove(); } catch (e) {} }
-    guestBlips = [];
+    if (!isGuest()) {
+      for (const b of guestBlips) { try { b.remove(); } catch (e) {} }
+      guestBlips = [];
+    }
   }
 }
 
