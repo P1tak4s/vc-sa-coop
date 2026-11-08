@@ -85,10 +85,29 @@ function apply(next, me, foes) {
       Task.SmartFleeChar(ped, foes[0].c, 25, 6000);
     } else if (next === "wait") {
       Task.StandStill(ped, 6000);
-    } else {
-      ped.clearTasks(); // follow / enter_car: the group does it
     }
+    // follow and enter_car are driven every frame in keepUp(), so nothing to start here
   } catch (e) { log(`[ai] ${next}: ${e}`); }
+}
+
+// follow / enter_car: run after CJ, sit in CJ's car (straight into the seat when close)
+let lastMove = 0;
+function keepUp(me, now) {
+  if (action !== "follow" && action !== "enter_car") return;
+  if (now - lastMove < 700) return;
+  lastMove = now;
+  try {
+    const a = me.getCoordinates(), b = ped.getCoordinates(), dd = d2(a, b);
+    if (me.isInAnyCar()) {
+      const car = me.storeCarIsInNoSave();
+      if (ped.isInAnyCar() && +ped.storeCarIsInNoSave() === +car) return;
+      if (dd < 64 && car.getSpeed() < 3) { ped.warpIntoCarAsPassenger(car, 0); return; }
+      Task.GoStraightToCoord(ped, a.x, a.y, a.z, 7, 3000);
+      return;
+    }
+    if (ped.isInAnyCar()) { ped.warpFromCarToCoord(a.x + 2, a.y + 1, a.z); return; }
+    if (dd > 16) Task.GoStraightToCoord(ped, a.x, a.y, a.z, dd > 400 ? 7 : 6, 3000);
+  } catch (e) { log(`[ai] keep up: ${e}`); }
 }
 
 log("[ai] ready");
@@ -118,5 +137,6 @@ while (true) {
     if (aiAsk(buf)) { lastAsk = now; lastSit = sit; }
   }
   const r = aiResult();
-  if (r >= 0 && r < ACTIONS.length) apply(ACTIONS[r], me, foes);
+  if (r >= 0 && r < ACTIONS.length) { if (ACTIONS[r] !== action) log(`[ai] Jev: ${ACTIONS[r]} (${sit})`); apply(ACTIONS[r], me, foes); }
+  keepUp(me, now);
 }
