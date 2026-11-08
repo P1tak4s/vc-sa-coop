@@ -15,7 +15,7 @@ if (!lib) { log("[sa-coop] coopnet64.asi not found"); exit("coopnet64.asi not fo
 const api = {};
 try {
   for (const name of ["coop_start", "coop_host", "coop_join_clipboard", "coop_code", "coop_status", "coop_slot",
-                      "coop_send", "coop_get", "coop_revive", "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send", "coop_ents_get"]) {
+                      "coop_send", "coop_get", "coop_revive", "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send", "coop_ents_get", "coop_is_host"]) {
     api[name] = Memory.Fn.X64(lib.getProcedure(name));
   }
 } catch (e) {
@@ -31,7 +31,7 @@ const mine = Memory.Allocate(SIZE);
 const theirs = Memory.Allocate(SIZE);
 const codeBuf = Memory.Allocate(32);
 const nameBuf = Memory.Allocate(32);
-const evBuf = Memory.Allocate(32);
+const evBuf = Memory.Allocate(128);
 
 const KEY = { G: 71, E: 69 };
 const SKINS = [105, 106, 107, 105]; // Grove Street looks until we sync clothes
@@ -436,8 +436,8 @@ function readStr(addr, n, ib) {
 }
 function ptr(addr, ib) { return Memory.ReadU32(addr, false, ib) + Memory.ReadU32(addr + 4, false, ib) * 0x100000000; }
 function sendEvent(kind, text) {
-  for (let i = 0; i < text.length && i < 24; i++) Memory.WriteU8(evBuf + i, text.charCodeAt(i) & 0x7f, false, false);
-  Memory.WriteU8(evBuf + Math.min(text.length, 24), 0, false, false);
+  for (let i = 0; i < text.length && i < 120; i++) Memory.WriteU8(evBuf + i, text.charCodeAt(i) & 0x7f, false, false);
+  Memory.WriteU8(evBuf + Math.min(text.length, 120), 0, false, false);
   api.coop_event_send(kind, evBuf);
 }
 function missionName() {
@@ -466,7 +466,7 @@ function tellWorld(mySlot, now) {
 
 // a friend's cutscene: play the same one here (only when we are free: on foot, not on our own mission)
 function playCutscene(name, me) {
-  if (!/^[A-Za-z0-9_]{2,24}$/.test(name) || ONMISSION || me.isInAnyCar() || downed) return;
+  if (!/^[A-Za-z0-9_]{2,24}$/.test(name) || (ONMISSION && !isGuest()) || me.isInAnyCar() || downed) return;
   playingCut = true;
   try {
     Cutscene.Load(name);
@@ -483,10 +483,11 @@ function playCutscene(name, me) {
 function hearWorld(me) {
   let kind;
   while ((kind = api.coop_event_poll(evBuf)) > 0) {
-    const text = readStr(evBuf, 31, false);
+    const text = readStr(evBuf, 127, false);
     if (kind === EV.WEATHER) { const w = parseInt(text, 10); if (w >= 0 && w < 64) try { Weather.ForceNow(w); } catch (e) {} }
     else if (kind === EV.CUTSCENE) playCutscene(text, me);
     else if (kind === 4 || kind === 5) onMissionEvent(kind, text);
+    else if (kind === 6 || kind === 7) onStoryEvent(kind, text);
     else if (kind === EV.MISSION) say(text ? `SA Co-op: draugas pradejo misija (${text})` : "SA Co-op: draugo misija baigesi");
   }
 }
@@ -604,7 +605,8 @@ function mirrorMissionEntities(now) {
 function missionsTick(now) {
   if (now - lastEntsAt < 200) return;
   lastEntsAt = now;
-  if (ONMISSION) {
+  storyTick(now);
+  if (ONMISSION && !isGuest()) {
     if (missionMoneyAt === null) missionMoneyAt = Memory.ReadI32(MRVA.money, false, true);
     sendMissionEntities();
     for (const h of [...proxies.keys()]) dropProxy(h); // our own mission: no copies of a friend's
@@ -627,6 +629,82 @@ function onMissionEvent(kind, text) {
     if (earned > 0 && earned < 10000000) {
       Memory.WriteI32(MRVA.money, Memory.ReadI32(MRVA.money, false, true) + earned, false, true);
       say(`SA Co-op: misija baigta, gavai $${earned}`);
+    }
+  }
+}
+
+// ---- one story for both (Saints Row 2 style): the host plays the story, the guest joins it -------------------
+// Guest: its own missions are switched off ($ONMISSION held at 1, so no mission markers or triggers), and it sees
+// the host's mission text and destination blips. Host: sends them. Addresses: Steam build 1.0.113.49697469.
+const SRVA = { scriptSpace: 0x51BEAE0, onMission: 0x521C91C, brief: 0x531CB70, radar: 0x542A7B0 };
+const EVS = { TEXT: 6, BLIPS: 7 };
+let lastBriefKey = "", lastBlipsSent = "", lastBlipsAt = 0, guestLocked = false;
+let guestBlips = [];
+
+function isGuest() { return api.coop_status() === 2 && !api.coop_is_host(); }
+
+function onMissionAddr() {
+  const off = Memory.ReadU32(SRVA.onMission, false, true);
+  return off ? SRVA.scriptSpace + off : 0;
+}
+
+// the guest's own story stays still while it plays the host's
+function lockGuestStory() {
+  const a = onMissionAddr();
+  if (!a) return;
+  if (isGuest()) {
+    if (Memory.ReadI32(a, false, true) !== 1) Memory.WriteI32(a, 1, false, true);
+    if (!guestLocked) { guestLocked = true; say("SA Co-op: zaidi draugo istorija. Tavo misijos laukia, kol atsijungsi"); }
+  } else if (guestLocked) {
+    guestLocked = false;
+    Memory.WriteI32(a, 0, false, true);
+    for (const b of guestBlips) { try { b.remove(); } catch (e) {} }
+    guestBlips = [];
+  }
+}
+
+function storyTick(now) {
+  lockGuestStory();
+  if (isGuest() || !ONMISSION) return;
+  // host: the mission text on screen (its GXT key, so the guest prints it in its own language)
+  if (Memory.ReadU32(SRVA.brief + 8, false, true) || Memory.ReadU32(SRVA.brief + 12, false, true)) {
+    const key = readStr(SRVA.brief, 7, true);
+    if (key && key !== lastBriefKey) {
+      lastBriefKey = key;
+      sendEvent(EVS.TEXT, `${key}:${Memory.ReadU32(SRVA.brief + 0x14, false, true)}`);
+    }
+  } else {
+    lastBriefKey = "";
+  }
+  // host: destination blips (type 4 = coord) every second when they change
+  if (now - lastBlipsAt < 1000) return;
+  lastBlipsAt = now;
+  const parts = [];
+  for (let i = 0; i < 250 && parts.length < 4; i++) {
+    const e = SRVA.radar + i * 0x30;
+    if (!(Memory.ReadU8(e + 0x29, false, true) & 2)) continue;
+    const f = Memory.ReadU8(e + 0x2A, false, true);
+    if (((f >> 2) & 15) !== 4 || !(f & 3)) continue;
+    const x = Memory.ReadFloat(e + 8, false, true), y = Memory.ReadFloat(e + 12, false, true), z = Memory.ReadFloat(e + 16, false, true);
+    parts.push(`${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)},${Memory.ReadU32(e, false, true) & 0xff}`);
+  }
+  const msg = parts.join(";");
+  if (msg !== lastBlipsSent) { lastBlipsSent = msg; sendEvent(EVS.BLIPS, msg || "-"); }
+}
+
+function onStoryEvent(kind, text) {
+  if (!isGuest()) return;
+  if (kind === EVS.TEXT) {
+    const [key, ms] = text.split(":");
+    if (/^[A-Z0-9_]{1,7}$/i.test(key)) { try { Text.PrintNow(key, Math.min(parseInt(ms, 10) || 4000, 15000), 1); } catch (e) {} }
+  } else if (kind === EVS.BLIPS) {
+    for (const b of guestBlips) { try { b.remove(); } catch (e) {} }
+    guestBlips = [];
+    if (text === "-") return;
+    for (const p of text.split(";")) {
+      const [x, y, z, col] = p.split(",").map(Number);
+      if (![x, y, z].every(Number.isFinite)) continue;
+      try { const b = Blip.AddForCoord(x, y, z); if (col <= 8) b.changeColor(col); guestBlips.push(b); } catch (e) {}
     }
   }
 }

@@ -24,6 +24,7 @@ struct Shared {
     revive_out: Option<u8>,     // a revive to send to that slot
     revived: bool,              // someone revived us; the script takes it once
     names: [String; MAX_PLAYERS],
+    host: bool, // we created the session: our story is the one both play
     events_out: Vec<Vec<u8>>,                       // kind + text, to send
     events_in: std::collections::VecDeque<Vec<u8>>, // kind + text, received
     ents_out: Option<Vec<u8>>,                      // our latest mission entity batch (n + entries)
@@ -178,6 +179,7 @@ pub extern "C" fn coop_host() -> i64 {
         return 1;
     }
     let Ok(sock) = UdpSocket::bind(("0.0.0.0", DEFAULT_PORT)) else { return 0 };
+    shared().lock().unwrap().host = true;
     let key = relay::random_key();
     std::thread::spawn(move || relay::run_server(sock, key, Default::default()));
     if let Some(ip) = relay::lan_ip() {
@@ -235,7 +237,7 @@ pub unsafe extern "C" fn coop_name(slot: i64, out: *mut u8, max: i64) -> i64 {
 pub unsafe extern "C" fn coop_event_send(kind: i64, text: *const u8) -> i64 {
     let t = c_str(text);
     let mut ev = vec![kind as u8];
-    ev.extend(t.bytes().filter(|b| b.is_ascii_graphic()).take(24));
+    ev.extend(t.bytes().filter(|b| b.is_ascii_graphic()).take(120));
     let mut s = shared().lock().unwrap();
     if s.events_out.len() < 32 {
         s.events_out.push(ev);
@@ -243,14 +245,14 @@ pub unsafe extern "C" fn coop_event_send(kind: i64, text: *const u8) -> i64 {
     1
 }
 
-/// Next received event: returns its kind (0 = none) and writes its text, null-terminated, into `out` (32 bytes).
+/// Next received event: returns its kind (0 = none) and writes its text, null-terminated, into `out` (128 bytes).
 #[no_mangle]
 pub unsafe extern "C" fn coop_event_poll(out: *mut u8) -> i64 {
     let Some(ev) = shared().lock().unwrap().events_in.pop_front() else { return 0 };
     if out.is_null() || ev.is_empty() {
         return 0;
     }
-    let text: Vec<u8> = ev[1..].iter().copied().filter(|b| b.is_ascii_graphic()).take(31).collect();
+    let text: Vec<u8> = ev[1..].iter().copied().filter(|b| b.is_ascii_graphic()).take(127).collect();
     std::ptr::copy_nonoverlapping(text.as_ptr(), out, text.len());
     *out.add(text.len()) = 0;
     ev[0] as i64
@@ -466,6 +468,7 @@ fn start_steam(host: bool, name: String, pw: String) -> i64 {
     }
     s.status = 1;
     s.stop = false;
+    s.host = host;
     drop(s);
     std::thread::spawn(move || steam_thread(host, name, pw));
     1
@@ -527,6 +530,12 @@ pub unsafe extern "C" fn coop_steam_host(name: *const u8, pw: *const u8) -> i64 
 #[no_mangle]
 pub unsafe extern "C" fn coop_steam_join(name: *const u8, pw: *const u8) -> i64 {
     start_steam(false, c_str(name), c_str(pw))
+}
+
+/// 1 = we host the session (our story), 0 = we joined someone else's.
+#[no_mangle]
+pub extern "C" fn coop_is_host() -> i64 {
+    shared().lock().unwrap().host as i64
 }
 
 #[no_mangle]
