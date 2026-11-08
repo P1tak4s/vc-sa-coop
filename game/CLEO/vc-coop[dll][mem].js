@@ -210,12 +210,18 @@ function readRemote() {
   return s;
 }
 
-// request and wait in small steps: LOAD_ALL_MODELS_NOW can block the script past CLEO's 2 s limit (11-08: the script
-// was disposed while a special character loaded)
-function loadModel(id) {
-  Streaming.RequestModel(id);
-  for (let i = 0; i < 80 && !Streaming.HasModelLoaded(id); i++) wait(25);
-  return Streaming.HasModelLoaded(id);
+// Never wait for a model. In the Definitive Edition a load can hold the game thread past CLEO's 2 s limit, and CLEO
+// then disposes the script (11-08, twice, right when the friend appeared). Ask once, use it on a later frame.
+const requestedAt = {};
+function modelReady(id) {
+  if (Streaming.HasModelLoaded(id)) return true;
+  const t = Date.now();
+  if (!requestedAt[id] || t - requestedAt[id] > 3000) {
+    requestedAt[id] = t;
+    log(`[vc-coop] model ${id} requested`);
+    Streaming.RequestModel(id);
+  }
+  return false;
 }
 
 function remoteWithCar(car) {
@@ -306,15 +312,19 @@ function handleOwnHealth(me, now) {
 // Definitive Edition: 11-08 LOAD_SPECIAL_CHARACTER "igken" crashed the game (UE blueprint loaded off the game thread).
 // Same order as SKIN_NAMES_VC in coopnet/src/overlay.rs; 0 = a street look per slot.
 const LOOKS = [0, 83, 85, 87, 93, 58, 15, 49]; // -, CBa, HNa, SGa, BKa, WMYBE, HMYRI, WFYST
+const STREET = [51, 33, 11, 58, 7, 12, 16, 37, 42, 55]; // street men: one is usually in memory already
 function lookModel(slot, look) {
-  const m = look > 0 && look < LOOKS.length ? LOOKS[look] : SKINS[slot];
-  return loadModel(m) ? m : 0;
+  if (look > 0 && look < LOOKS.length) return modelReady(LOOKS[look]) ? LOOKS[look] : 0;
+  const loaded = STREET.find((m) => Streaming.HasModelLoaded(m));
+  if (loaded) return loaded;
+  return modelReady(SKINS[slot]) ? SKINS[slot] : 0;
 }
 
 function spawnPed(slot, s) {
   const look = (s.flags >> 16) & 0xff;
   const model = lookModel(slot, look);
-  if (!model) return null;
+  if (!model) return null; // not in memory yet: next frame
+  log(`[vc-coop] friend ${slot}: creating with model ${model}`);
   const ped = Char.Create(4, model, s.x, s.y, s.z);
   Streaming.MarkModelAsNoLongerNeeded(model);
   placeAt(pedPtr(ped), s.x, s.y, s.z);
@@ -364,7 +374,7 @@ function removeRemote(slot) {
 function driveRemote(r, s, now) {
   if (!r.car || r.carModel !== s.carModel || !carExists(r.car)) {
     dropCar(r);
-    if (s.carModel < 130 || s.carModel > 236 || !loadModel(s.carModel)) return;
+    if (s.carModel < 130 || s.carModel > 236 || !modelReady(s.carModel)) return; // the car appears when loaded
     r.car = Car.Create(s.carModel, s.x, s.y, s.z);
     Streaming.MarkModelAsNoLongerNeeded(s.carModel);
     r.car.setProofs(true, true, true, true, true);
@@ -523,16 +533,16 @@ function downRemote(r, s, slot, me) {
 // their gun in their copy's hands (VC has no "shoot at a point" for peds: shots are not shown yet)
 function armRemote(r, s) {
   if (s.weapon === r.weapon) return;
-  r.weapon = s.weapon;
   try {
     if (s.weapon > 0 && s.weapon < WEAPON_MODEL.length) {
       const model = WEAPON_MODEL[s.weapon];
-      if (model > 0) loadModel(model);
+      if (model > 0 && !modelReady(model)) return; // given on a later frame
       r.ped.giveWeapon(s.weapon, 9999);
       if (model > 0) Streaming.MarkModelAsNoLongerNeeded(model);
     }
     r.ped.setCurrentWeapon(s.weapon);
   } catch (e) { log(`[vc-coop] weapon ${s.weapon}: ${e}`); }
+  r.weapon = s.weapon;
 }
 
 // notoriety is shared: if a friend has more stars, we get them too (never lowered here)
@@ -754,7 +764,7 @@ function mirrorMissionEntities() {
         const pedModel = model >= 109 && model <= 129 ? SKINS[0] : model;
         if (dead || !(kind === 2 ? pedModel > 0 && pedModel < 109 : model >= 130 && model <= 236)) continue;
         const use = kind === 2 ? pedModel : model;
-        if (!loadModel(use)) continue;
+        if (!modelReady(use)) continue; // created on a later frame
         const ent = kind === 2 ? Char.Create(18, use, x, y, z) : Car.Create(use, x, y, z); // 18: criminal
         Streaming.MarkModelAsNoLongerNeeded(use);
         let blip = null;
@@ -930,6 +940,7 @@ function report(me, t) {
 // ---- main loop ------------------------------------------------------------------------------------------
 log("[vc-coop] loaded");
 let started = false, announced = -1, lastCode = "", lastCodeCheck = 0;
+let tracedTicks = 0;
 
 while (true) {
   wait(0);
@@ -955,15 +966,18 @@ while (true) {
   if (status !== 2) continue;
 
   const me = player.getChar();
-  handleOwnHealth(me, t);
-  writeMine(me);
-  syncRemotes(me, api.coop_slot(), t);
-  tellPartner(me);
-  drawNames();
-  tellWorld(api.coop_slot(), t);
-  hearWorld();
-  missionsTick(t);
-  report(me, t);
+  // the first connected frames name each step in the log: if CLEO disposes the script, the last name shows where
+  const trace = tracedTicks < 3 ? (step) => log(`[vc-coop] tick ${tracedTicks}: ${step}`) : () => {};
+  trace("health"); handleOwnHealth(me, t);
+  trace("send"); writeMine(me);
+  trace("friends"); syncRemotes(me, api.coop_slot(), t);
+  trace("partner"); tellPartner(me);
+  trace("names"); drawNames();
+  trace("world"); tellWorld(api.coop_slot(), t);
+  trace("events"); hearWorld();
+  trace("missions"); missionsTick(t);
+  trace("report"); report(me, t);
+  trace("done"); tracedTicks++;
   if (riding && (!carExists(riding.car) || downed)) stopRiding(me);
   if (pressed(KEY.G) && !riding) tryRideAlong(me);
   if (riding && pressed(KEY.F)) { stopRiding(me); continue; }
