@@ -1,6 +1,7 @@
-# SA Co-op
+# SA Co-op (and VC Co-op)
 
-Online co-op for **GTA San Andreas – The Definitive Edition** (PC, Steam), in the spirit of Saints Row 2: pick
+Online co-op for **GTA San Andreas – The Definitive Edition** and **GTA Vice City – The Definitive Edition**
+(PC, Steam), in the spirit of Saints Row 2: pick
 **co-op** in the game's own menu, create a session with a name and password, your friend joins with the same
 name and password, and you play in each other's world.
 
@@ -21,16 +22,33 @@ Status: work in progress. See "What works" below before you expect a full story 
 
 Not yet: shared mission entities (enemies, targets), shared money, your friend wearing CJ's clothes.
 
+### Vice City
+
+The same mod, the same `coopnet64.asi`; the launcher installs `vc-coop.js` instead of the San Andreas scripts.
+Vice City has fewer script commands than San Andreas, so more is read from the game's memory (build
+1.0.113.49697469). Differences from San Andreas:
+
+- **G** seats you through the game's own passenger warp; **E** revive works the same, a downed player cowers
+- your friend's shots are not shown (Vice City has no "shoot at a point" for other characters), the gun is
+- a friend's cutscene is not replayed (Vice City cutscenes need the objects their mission creates)
+- the guest's own missions are refused through CAN_PLAYER_START_MISSION; the host's start waits for the partner
+- looks: a street look or Ken, Sonny, Diaz, Mercedes, Candy, Hilary, Gonzalez
+- no AI partner
+
+Status 2026-11-08: installs and starts; menu, story and overlay hooks report OK at the title screen. Nothing past the
+title screen has been tried in the game yet.
+
 ## Requirements
 
-- A legally owned copy of GTA San Andreas – The Definitive Edition on Steam, build **1.0.113.49697469**
+- A legally owned copy of GTA San Andreas or Vice City – The Definitive Edition on Steam, build **1.0.113.49697469**
   (memory addresses are for this build; another build needs new ones)
 - Windows 10/11, each player on their own PC with their own copy
 
 ## Install
 
 1. Download the release and unpack it anywhere.
-2. Run `sa-coop.exe` and press **Įdiegti / atnaujinti modą** (install / update). It finds the game in your Steam
+2. Run `sa-coop.exe`, pick **San Andreas** or **Vice City** and press **Įdiegti / atnaujinti modą** (install /
+   update); `sa-coop.exe --install vc` (or `sa`) does the same without the window. It finds the game in your Steam
    libraries and installs:
    - CLEO Redux and Ultimate ASI Loader (their licences are included)
    - `coopnet64.asi` and the game scripts
@@ -39,7 +57,7 @@ Not yet: shared mission entities (enemies, targets), shared money, your friend w
    - `Engine.ini` graphics settings, only if you have none
 3. Start the game from Steam. Press **co-op** in the menu (or **F9** anywhere).
 
-To remove: delete `version.dll`, `cleo_redux64.asi`, `coopnet64.asi` and the `CLEO` folder from
+To remove (either game): delete `version.dll`, `cleo_redux64.asi`, `coopnet64.asi` and the `CLEO` folder from
 `Gameface\Binaries\Win64`, `Gameface\Content\Paks\~mods\coop_P.pak`, and the `Engine.ini` the installer created.
 
 ## How it is built
@@ -49,7 +67,8 @@ To remove: delete `version.dll`, `cleo_redux64.asi`, `coopnet64.asi` and the `CL
 | `proto/` | wire format (80-byte player state, events, join code) |
 | `relay/` | UDP relay server for IP mode, UPnP |
 | `coopnet/` | `coopnet64.asi`: network (Steam lobby + P2P or UDP), the in-game co-op screen (hudhook / Dear ImGui), the menu hook (UObject::ProcessEvent) |
-| `game/CLEO/` | CLEO Redux scripts: friend sync, passenger, revive, names, world sync, your car |
+| `game/CLEO/` | CLEO Redux scripts: friend sync, passenger, revive, names, world sync, your car (`vc-coop.js` for Vice City) |
+| `coopnet/src/game.rs` | what differs per game: folders, addresses, menu button classes |
 | `launcher/` | `sa-coop.exe`: installer and IP-mode host/join |
 | `menu-mod/tool/` | MenuPatch (UAssetAPI): adds the co-op entry to the game's menu templates |
 | `tools/` | `dll_test.py` (loopback test without the game), `botas.py` (a test friend) |

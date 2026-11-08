@@ -73,6 +73,20 @@ fn docs_dir(g: &GameInfo) -> Option<PathBuf> {
 }
 
 fn main() -> eframe::Result {
+    // sa-coop.exe --install sa|vc: install without the window, the result goes to %LOCALAPPDATA%\<game>-de-coop\install.log
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--install") {
+        let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
+        let lines = match find_game(g) {
+            Some(dir) => install(g, &dir).unwrap_or_else(|e| vec![e]),
+            None => vec![format!("{} nerastas Steam bibliotekose", g.name)],
+        };
+        let dir = data_dir(g);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("install.log"), lines.join("
+"));
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([460.0, 520.0]).with_resizable(false),
         ..Default::default()
