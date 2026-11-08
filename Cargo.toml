@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["proto", "relay", "coopnet", "launcher", "setup"]
+members = ["proto", "relay", "coopnet", "launcher"]
 
 [profile.release]
 opt-level = 3

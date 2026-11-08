@@ -2,6 +2,9 @@
 //! or join one with a code, then start the game through Steam. Like Saints Row 2: everything before the game starts.
 #![windows_subsystem = "windows"]
 
+mod icon;
+mod ui;
+
 use eframe::egui;
 use proto::*;
 use relay::{lan_ip, random_key, run_server, upnp, Players};
@@ -212,10 +215,14 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([460.0, 520.0]).with_resizable(false),
+        viewport: egui::ViewportBuilder::default()
+            .with_title("VC / SA Co-op")
+            .with_inner_size([600.0, 780.0])
+            .with_min_inner_size([520.0, 560.0])
+            .with_icon(Arc::new(ui::icon())),
         ..Default::default()
     };
-    eframe::run_native("SA / VC Co-op", options, Box::new(|_| Ok(Box::new(App::new()))))
+    eframe::run_native("VC / SA Co-op", options, Box::new(|cc| Ok(Box::new(ui::App::new(cc)))))
 }
 
 // ---- game folder and install ---------------------------------------------------------------------------
@@ -537,213 +544,35 @@ fn write_session(g: &GameInfo, server: SocketAddr, key: u32, nick: &str) -> std:
     std::fs::write(dir.join("session.txt"), format!("server={server}\nkey={key:08x}\nnick={nick}\n"))
 }
 
+/// Start the game through Steam (the steam:// link, opened by Windows like any link: no command prompt).
 fn start_game(g: &GameInfo) {
-    use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("cmd").args(["/C", "start", "", g.steam]).creation_flags(0x0800_0000).spawn();
-}
-
-// ---- UI -------------------------------------------------------------------------------------------------
-
-#[derive(PartialEq)]
-enum Tab {
-    Host,
-    Join,
-}
-
-struct Hosting {
-    internet_code: Option<String>,
-    lan_code: Option<String>,
-    players: Players,
-}
-
-struct App {
-    which: usize,
-    games: [Option<PathBuf>; 2],
-    nick: String,
-    tab: Tab,
-    code: String,
-    hosting: Option<Hosting>,
-    msg: Vec<String>,
-}
-
-impl App {
-    fn new() -> App {
-        let games = [find_game(&GAMES[0]), find_game(&GAMES[1])];
-        // Vice City first when only Vice City is there
-        let which = if games[0].is_none() && games[1].is_some() { 1 } else { 0 };
-        App { which, games, nick: "Žaidėjas".into(), tab: Tab::Host, code: String::new(), hosting: None, msg: vec![] }
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (op, url) = (wide("open"), wide(g.steam));
+    unsafe {
+        ShellExecuteW(std::ptr::null_mut(), op.as_ptr(), url.as_ptr(), std::ptr::null(), std::ptr::null(), 1);
     }
+}
 
-    fn host(&mut self) {
-        let sock = match UdpSocket::bind(("0.0.0.0", DEFAULT_PORT)) {
-            Ok(s) => s,
-            Err(e) => return self.msg.push(format!("Nepavyko atidaryti {DEFAULT_PORT} prievado: {e}")),
-        };
-        let key = random_key();
-        let players: Players = Arc::default();
-        let p2 = players.clone();
-        std::thread::spawn(move || run_server(sock, key, p2));
-        let internet_code = upnp(DEFAULT_PORT).map(|ip| make_code(ip.octets(), DEFAULT_PORT, key));
-        let lan_code = lan_ip().map(|ip| make_code(ip.octets(), DEFAULT_PORT, key));
-        if internet_code.is_none() {
-            self.msg.push(format!("Maršrutizatorius neatidarė prievado (UPnP). Draugui per internetą atidaryk UDP {DEFAULT_PORT} ranka."));
-        }
-        if let Err(e) = write_session(&GAMES[self.which], SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)), key, &self.nick) {
-            self.msg.push(format!("Nepavyko įrašyti sesijos: {e}"));
-        }
-        self.hosting = Some(Hosting { internet_code, lan_code, players });
-    }
-
-    fn join(&mut self) -> bool {
-        let Some((ip, port, key)) = parse_code(&self.code) else {
-            self.msg.push("Kodas neteisingas: jame turi būti 16 simbolių.".into());
+/// Is the game's exe running now (its files are locked while it runs)?
+fn game_running(g: &GameInfo) -> bool {
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap.is_null() || snap as isize == -1 {
             return false;
-        };
-        match write_session(&GAMES[self.which], SocketAddr::from((ip, port)), key, &self.nick) {
-            Ok(()) => true,
-            Err(e) => {
-                self.msg.push(format!("Nepavyko įrašyti sesijos: {e}"));
-                false
-            }
         }
-    }
-}
-
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_millis(500));
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("SA / VC Co-op");
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.which, 0, "San Andreas");
-                ui.selectable_value(&mut self.which, 1, "Vice City");
-            });
-            let g = &GAMES[self.which];
-            ui.label(g.name);
-            ui.separator();
-
-            match self.games[self.which].clone() {
-                None => {
-                    ui.colored_label(egui::Color32::RED, "Žaidimas nerastas Steam bibliotekose.");
-                    return;
-                }
-                Some(game) => {
-                    if installed(g, &game) {
-                        ui.label("✔ Modas įdiegtas");
-                    } else {
-                        ui.label("Modas dar neįdiegtas.");
-                    }
-                    if ui.button("Įdiegti / atnaujinti modą").clicked() {
-                        match install(g, &game) {
-                            Ok(l) => self.msg.extend(l),
-                            Err(e) => self.msg.push(e),
-                        }
-                    }
-                }
-            }
-            if is_vc(g) {
-                if let Some(dir) = self.games[self.which].clone() {
-                    let better = handling_pak(&dir).is_some_and(|p| p.is_file());
-                    ui.horizontal(|ui| {
-                        ui.label("Mašinų valdymas:");
-                        for (on, name) in [(false, "Originalus"), (true, "Geresnis")] {
-                            if ui.selectable_label(better == on, name).clicked() && better != on {
-                                let m = set_handling(g, &dir, on).unwrap_or_else(|e| e);
-                                self.msg.push(m);
-                            }
-                        }
-                    });
-                }
-            }
-            if let Some(dir) = self.games[self.which].clone() {
-                match reshade_on(&dir) {
-                    None => {
-                        ui.small("ReShade: žaidime jau yra kito modo dxgi.dll");
-                    }
-                    Some(on) => {
-                        ui.horizontal(|ui| {
-                            ui.label("ReShade spalvos:");
-                            for (want, name) in [(false, "Išjungta"), (true, "Įjungta")] {
-                                if ui.selectable_label(on == want, name).clicked() && on != want {
-                                    let m = set_reshade(&dir, want).unwrap_or_else(|e| e);
-                                    self.msg.push(m);
-                                }
-                            }
-                        });
-                    }
-                }
-            }
-            match graphics_level(g) {
-                None => {
-                    ui.small("Grafika: tavo paties Engine.ini (nekeičiamas)");
-                }
-                Some(cur) => {
-                    ui.horizontal(|ui| {
-                        ui.label("Grafika:");
-                        for (i, (name, _)) in GRAPHICS.iter().enumerate() {
-                            if ui.selectable_label(cur == i, *name).clicked() && cur != i {
-                                let m = set_graphics(g, i).unwrap_or_else(|e| e);
-                                self.msg.push(m);
-                            }
-                        }
-                    });
-                }
-            }
-            ui.separator();
-
-            ui.horizontal(|ui| {
-                ui.label("Slapyvardis:");
-                ui.add(egui::TextEdit::singleline(&mut self.nick).char_limit(NICK_LEN));
-            });
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Host, "Kurti žaidimą");
-                ui.selectable_value(&mut self.tab, Tab::Join, "Prisijungti");
-            });
-            ui.add_space(6.0);
-
-            match self.tab {
-                Tab::Host => match &self.hosting {
-                    None => {
-                        ui.label("Serveris veiks šiame kompiuteryje. Draugui duosi kodą.");
-                        if ui.button("Kurti žaidimą").clicked() {
-                            self.host();
-                        }
-                    }
-                    Some(h) => {
-                        for (label, code) in [("Kodas draugui per internetą:", &h.internet_code), ("Kodas tame pačiame tinkle:", &h.lan_code)] {
-                            if let Some(code) = code {
-                                ui.label(label);
-                                ui.horizontal(|ui| {
-                                    ui.monospace(code);
-                                    if ui.button("Kopijuoti").clicked() {
-                                        ctx.copy_text(code.clone());
-                                    }
-                                });
-                            }
-                        }
-                        let players = h.players.lock().unwrap().clone();
-                        ui.label(format!("Prisijungę: {}", if players.is_empty() { "dar niekas".into() } else { players.join(", ") }));
-                        if ui.button("Paleisti žaidimą").clicked() {
-                            start_game(g);
-                        }
-                        ui.small("Nelaikyk šio lango uždaryto, kol žaidžiat: jame veikia serveris.");
-                    }
-                },
-                Tab::Join => {
-                    ui.label("Draugo kodas:");
-                    ui.text_edit_singleline(&mut self.code);
-                    if ui.button("Prisijungti ir paleisti žaidimą").clicked() && self.join() {
-                        start_game(g);
-                        self.msg.push("Žaidimas paleidžiamas. Įkėlus išsaugojimą prisijungsi automatiškai.".into());
-                    }
-                }
-            }
-
-            ui.separator();
-            for m in self.msg.iter().rev().take(6) {
-                ui.small(m);
-            }
-        });
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = false;
+        let mut ok = Process32FirstW(snap, &mut e) != 0;
+        while ok && !found {
+            let len = e.szExeFile.iter().position(|c| *c == 0).unwrap_or(e.szExeFile.len());
+            found = String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(g.exe);
+            ok = Process32NextW(snap, &mut e) != 0;
+        }
+        windows_sys::Win32::Foundation::CloseHandle(snap);
+        found
     }
 }
 

@@ -1,6 +1,4 @@
-// The installer's resources: icon, version info, an asInvoker manifest (no admin: Windows would otherwise guess
-// "Setup" means "elevate"), and the mod itself as a zip (SETUP_PAYLOAD, made by tools/make_setup.py).
-use std::io::Write;
+// The app's resources: icon (drawn in src/icon.rs), version info, and an asInvoker manifest (no admin prompt).
 use std::path::PathBuf;
 
 include!("src/icon.rs");
@@ -50,30 +48,16 @@ fn ico(sizes: &[u32]) -> Vec<u8> {
 
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    // the mod, or an empty zip when building without it (cargo check, tests)
-    println!("cargo:rerun-if-env-changed=SETUP_PAYLOAD");
-    let payload = out.join("payload.zip");
-    match std::env::var("SETUP_PAYLOAD") {
-        Ok(p) => {
-            println!("cargo:rerun-if-changed={p}");
-            std::fs::copy(&p, &payload).expect("SETUP_PAYLOAD not readable");
-        }
-        Err(_) => {
-            // smallest valid zip: an end-of-central-directory record
-            let mut f = std::fs::File::create(&payload).unwrap();
-            f.write_all(&[0x50, 0x4B, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
-        }
-    }
-    let icon = out.join("setup.ico");
+    let icon = out.join("app.ico");
     std::fs::write(&icon, ico(&[16, 32, 48, 256])).unwrap();
     println!("cargo:rerun-if-changed=src/icon.rs");
     let mut res = winresource::WindowsResource::new();
     res.set_icon(icon.to_str().unwrap());
     res.set("ProductName", "VC / SA Co-op");
-    res.set("FileDescription", "VC / SA Co-op diegiklis");
+    res.set("FileDescription", "VC / SA Co-op: diegimas ir nustatymai");
     res.set("CompanyName", "P1tak4s (atviras kodas)");
     res.set("LegalCopyright", "MIT licencija. Ne Rockstar Games ir ne Take-Two produktas.");
-    res.set("OriginalFilename", "VC-SA-Coop-Setup.exe");
+    res.set("OriginalFilename", "VC-SA-Coop.exe");
     res.set_manifest(
         r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
 <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3"><security><requestedPrivileges>
