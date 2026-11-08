@@ -45,7 +45,10 @@ while True:
     if slot is None:
         s.sendto(MAGIC + bytes([1]) + struct.pack("<I", key) + b"Botas".ljust(16, b"\0"), srv); time.sleep(0.5); continue
     if center is None: continue
-    if DRIVE:
+    if MODE == "stovi":  # in the car, parked 4 m east of you: for testing G (ride along)
+        st = struct.pack("<12f8i", center[0] + 4, center[1], center[2] + 0.5, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+                         1, 411, 100, 1000, 0, 720, 0, SKIN << 16)
+    elif DRIVE:
         r, w = 15.0, 0.5  # 7.5 m/s around a 15 m circle
         a = (time.time() - t0) * w
         x, y = center[0] + r * math.cos(a), center[1] + r * math.sin(a)

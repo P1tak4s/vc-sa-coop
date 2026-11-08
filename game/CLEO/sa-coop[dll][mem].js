@@ -243,6 +243,14 @@ function leaveCar(r, s) {
 
 function dropCar(r) {
   if (!r.car) return;
+  // never delete a car we sit in or are climbing into: get out first, or CJ is left stuck in the enter animation
+  try {
+    if (Car.DoesExist(r.car)) {
+      const me = player.getChar(), c = r.car.getCoordinates();
+      if (me.isInAnyCar() && +me.storeCarIsInNoSave() === +r.car) me.warpFromCarToCoord(c.x + 2.5, c.y, c.z);
+      else if (dist2(me.getCoordinates(), c) < 49) me.clearTasksImmediately();
+    }
+  } catch (e) {}
   try {
     if (Car.DoesExist(r.car)) {
       const c = r.car.getCoordinates();
