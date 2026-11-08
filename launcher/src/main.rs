@@ -74,12 +74,50 @@ fn graphics_level(g: &GameInfo) -> Option<usize> {
     GRAPHICS.iter().position(|(_, t)| !t.is_empty() && t.replace("\r\n", "\n").trim() == text.replace("\r\n", "\n").trim()).or(Some(1))
 }
 
+/// The DE's own override file (CustomSettings.ini, [CustomSettings]): our lines live between two marker lines, the
+/// rest of the file is the player's and stays as it is.
+const CUSTOM: [&str; 4] = [
+    "",
+    "gta.worldcomp.distmult=3.0",
+    "gta.worldcomp.distmult=4.0\nr.DefaultFeature.AmbientOcclusion=1\ngta.reflections.size_planar=2048",
+    "gta.worldcomp.distmult=8.0\nr.DefaultFeature.AmbientOcclusion=1\ngta.reflections.size_planar=4096",
+];
+const CUSTOM_BEGIN: &str = "; >>> Co-op graphics (sa-coop.exe changes only these lines)";
+const CUSTOM_END: &str = "; <<< Co-op graphics";
+
+fn set_custom_settings(g: &GameInfo, level: usize) -> Result<(), String> {
+    let Some(path) = engine_ini(g).map(|p| p.with_file_name("CustomSettings.ini")) else { return Ok(()) };
+    let old = std::fs::read_to_string(&path).unwrap_or_else(|_| "[CustomSettings]\n".into()).replace("\r\n", "\n");
+    // drop our previous block
+    let mut kept = vec![];
+    let mut inside = false;
+    for line in old.lines() {
+        if line == CUSTOM_BEGIN { inside = true; continue; }
+        if line == CUSTOM_END { inside = false; continue; }
+        if !inside { kept.push(line.to_string()); }
+    }
+    let lines = CUSTOM[level.min(CUSTOM.len() - 1)];
+    if !lines.is_empty() {
+        if !kept.iter().any(|l| l.trim() == "[CustomSettings]") {
+            kept.push("[CustomSettings]".into());
+        }
+        let at = kept.iter().position(|l| l.trim() == "[CustomSettings]").unwrap() + 1;
+        let block: Vec<String> = std::iter::once(CUSTOM_BEGIN.to_string()).chain(lines.lines().map(String::from)).chain(std::iter::once(CUSTOM_END.to_string())).collect();
+        kept.splice(at..at, block);
+    }
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&path, kept.join("\r\n") + "\r\n").map_err(|e| e.to_string())
+}
+
 fn set_graphics(g: &GameInfo, level: usize) -> Result<String, String> {
     let ini = engine_ini(g).ok_or("nerastas Documents aplankas")?;
     if graphics_level(g).is_none() {
         return Err(format!("{} yra tavo paties: nekeičiu (ištrink jį, jei nori mūsų nustatymų)", ini.display()));
     }
     let (name, text) = GRAPHICS[level.min(GRAPHICS.len() - 1)];
+    if is_vc(g) {
+        set_custom_settings(g, level)?;
+    }
     if text.is_empty() {
         let _ = std::fs::remove_file(&ini);
     } else {
