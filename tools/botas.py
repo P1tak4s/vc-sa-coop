@@ -4,6 +4,7 @@ With "masina" it drives an Infernus on a 15 m circle instead of walking; with "s
 for you to revive it (E). It always revives you when you are down (after 3 s)."""
 import math, os, socket, struct, sys, time
 MODE = sys.argv[1] if len(sys.argv) > 1 else ""
+SKIN = int(os.environ.get("SKIN", "1"))  # 1 = Sweet: tests the story-character look
 DRIVE = MODE == "masina"
 down = MODE == "suzeistas"; you_down_since = None
 
@@ -33,6 +34,10 @@ while True:
                     s.sendto(MAGIC + bytes([6, d[5]]), srv); print("atgaivinu tave"); you_down_since = None
             else:
                 you_down_since = None
+        if d[:4] == MAGIC and d[4] == 8 and len(d) > 7:
+            print("ivykis", d[6], d[7:].split(bytes([0]))[0].decode(errors="replace"))
+        if d[:4] == MAGIC and d[4] == 9 and len(d) > 7:
+            print("misijos objektai:", d[6])
         if d[:4] == MAGIC and d[4] == 6 and len(d) >= 7 and d[6] == slot:
             print("tu mane atgaivinai"); down = False
     except socket.timeout:
@@ -47,12 +52,12 @@ while True:
         heading = math.degrees(a) % 360  # SA: 0 = north (+y), counter-clockwise; at angle a the circle runs (-sin a, cos a)
         h = math.radians(heading)
         st = struct.pack("<12f8i", x, y, center[2] + 0.5, heading, 0, 0, 0, 0, 0, math.sin(h / 2), math.cos(h / 2), r * w,
-                         1, 411, 100, 1000, 0, 720, 0, 0)
+                         1, 411, 100, 1000, 0, 720, 0, SKIN << 16)
     else:
         a = (time.time() - t0) * 0.4  # ~1.6 m/s on a 4 m circle: a walk
         x, y = center[0] + 4 * math.cos(a), center[1] + 4 * math.sin(a)
         heading = (math.degrees(a) + 180) % 360
         if down: x, y = center[0] + 3, center[1]
-        st = struct.pack("<12f8i", x, y, center[2], heading, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, -1 if down else 100, 0, 0, 720, 0, 0)
+        st = struct.pack("<12f8i", x, y, center[2], heading, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, -1 if down else 100, 0, 0, 720, 0, SKIN << 16)
     s.sendto(MAGIC + bytes([4]) + st, srv)
     time.sleep(0.05)

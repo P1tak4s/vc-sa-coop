@@ -15,7 +15,7 @@ if (!lib) { log("[sa-coop] coopnet64.asi not found"); exit("coopnet64.asi not fo
 const api = {};
 try {
   for (const name of ["coop_start", "coop_host", "coop_join_clipboard", "coop_code", "coop_status", "coop_slot",
-                      "coop_send", "coop_get", "coop_revive", "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send", "coop_ents_get", "coop_is_host"]) {
+                      "coop_send", "coop_get", "coop_revive", "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send", "coop_ents_get", "coop_is_host", "coop_my_skin"]) {
     api[name] = Memory.Fn.X64(lib.getProcedure(name));
   }
 } catch (e) {
@@ -171,6 +171,7 @@ function writeMine(me) {
   try { if (player.isTargetingAnything()) flags |= 1; } catch (e) {}
   try { if (me.isShooting()) flags |= 2; } catch (e) {}
   try { flags |= Math.min(6, player.storeWantedLevel()) << 8; } catch (e) {}
+  try { flags |= (api.coop_my_skin() & 0xff) << 16; } catch (e) {}
   Memory.WriteI32(mine + I.weapon, weapon, false, false);
   Memory.WriteI32(mine + I.flags, flags, false, false);
   api.coop_send(mine);
@@ -205,18 +206,35 @@ function handleOwnHealth(me, now) {
 }
 
 // ---- friends --------------------------------------------------------------------------------------------
+// story characters load through their own special slots (290 + slot - 1); creating them directly crashes
+const STORY_LOOKS = ["", "sweet", "ryder", "smoke", "cesar", "kendl", "wuzimu", "truth"];
+function lookModel(slot, look) {
+  const name = STORY_LOOKS[look] || "";
+  if (!name) { const m = SKINS[slot]; return loadModel(m) ? m : 0; }
+  const special = 10 - slot; // slots 10, 9, 8, 7: missions use the low ones first
+  try {
+    Streaming.LoadSpecialCharacter(special, name);
+    Streaming.LoadAllModelsNow();
+    for (let i = 0; i < 40 && !Streaming.HasSpecialCharacterLoaded(special); i++) wait(25);
+    if (Streaming.HasSpecialCharacterLoaded(special)) return 290 + special - 1;
+  } catch (e) { log(`[sa-coop] look ${name}: ${e}`); }
+  const m = SKINS[slot];
+  return loadModel(m) ? m : 0;
+}
+
 function spawnPed(slot, s) {
-  const model = SKINS[slot];
-  if (!loadModel(model)) return null;
+  const look = (s.flags >> 16) & 0xff;
+  const model = lookModel(slot, look);
+  if (!model) return null;
   const ped = Char.Create(4, model, s.x, s.y, s.z);
-  Streaming.MarkModelAsNoLongerNeeded(model);
+  if (model < 290) Streaming.MarkModelAsNoLongerNeeded(model);
   ped.setProofs(true, true, true, true, true); // traffic and cops must not kill the copy of your friend
   ped.setCantBeDraggedOut(true);
   ped.setKeepTask(true);
   const blip = Blip.AddForChar(ped);
   try { blip.setAsFriendly(true); blip.changeDisplay(2); } catch (e) {} // map and radar only: the name is over the head
   log(`[sa-coop] friend ${slot} appeared`);
-  return { ped, car: null, carModel: 0, blip, lastTask: 0, lostAt: 0, lastPos: null, rx: null, down: false, hinted: false };
+  return { ped, car: null, carModel: 0, blip, lastTask: 0, lostAt: 0, lastPos: null, rx: null, down: false, hinted: false, look };
 }
 
 function leaveCar(r, s) {
@@ -391,6 +409,7 @@ function syncRemotes(me, mySlot, now) {
     const s = readRemote();
     let r = remotes[slot];
     if (r && !Char.DoesExist(r.ped)) { remotes[slot] = null; r = null; }
+    if (r && r.look !== ((s.flags >> 16) & 0xff)) { removeRemote(slot); r = null; } // they changed their look
     if (!r) r = remotes[slot] = spawnPed(slot, s);
     if (!r) continue;
     r.lostAt = 0;

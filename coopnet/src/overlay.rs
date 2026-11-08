@@ -7,6 +7,9 @@ use hudhook::{ImguiRenderLoop, MessageFilter, RenderContext};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static OPEN: AtomicBool = AtomicBool::new(false);
+/// How the others see us: 0 = a Grove Street member, 1.. = a story character (SKINS in the script).
+pub static SKIN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub const SKIN_NAMES: [&str; 8] = ["Grove Street narys", "Sweet", "Ryder", "Big Smoke", "Cesar", "Kendl", "Woozie", "The Truth"];
 
 pub fn toggle() {
     let was = OPEN.fetch_xor(true, Ordering::SeqCst);
@@ -105,7 +108,7 @@ impl ImguiRenderLoop for CoopMenu {
         let pw = &mut self.pw;
         ui.window("##sacoop")
             .position([x0, y0], Condition::Always)
-            .size([w, ROW_H * 6.4], Condition::Always)
+            .size([w, ROW_H * 8.4], Condition::Always)
             .title_bar(false)
             .resizable(false)
             .movable(false)
@@ -157,8 +160,17 @@ impl ImguiRenderLoop for CoopMenu {
                 ui.input_text("##pw", pw).password(true).build();
                 y += ROW_H;
 
+                let skin = SKIN.load(Ordering::SeqCst) as usize % SKIN_NAMES.len();
+                if row_bg(y, 2, "Išvaizda") {
+                    SKIN.store(((skin + 1) % SKIN_NAMES.len()) as u8, Ordering::SeqCst);
+                }
+                let label = format!("<  {}  >", SKIN_NAMES[skin]);
+                let ts = ui.calc_text_size(&label);
+                dl.add_text([origin[0] + w - ts[0] - 30.0, y + (ROW_H - ts[1]) / 2.0], [1.0, 1.0, 1.0, 1.0], &label);
+                y += ROW_H;
+
                 let go_label = if join_tab { "Prisijungti" } else { "Sukurti sesiją" };
-                if row_bg(y, 2, go_label) {
+                if row_bg(y, 3, go_label) {
                     go = true;
                 }
                 if can {
@@ -166,14 +178,22 @@ impl ImguiRenderLoop for CoopMenu {
                 }
                 y += ROW_H;
 
-                row_bg(y, 3, "");
+                row_bg(y, 4, "");
                 {
                     let _s = small_font.map(|f| ui.push_font(f));
                     dl.add_text([origin[0] + 26.0, y + 20.0], [0.98, 0.90, 0.40, 1.0], st);
                 }
                 y += ROW_H;
 
-                if row_bg(y, 4, "Atgal") {
+                if !join_tab && row_bg(y, 5, "Bandymas su robotu (be draugo)") && !busy {
+                    if crate::coop_host() == 1 {
+                        crate::log_line("test host started for the bot");
+                    }
+                }
+                if !join_tab {
+                    y += ROW_H;
+                }
+                if row_bg(y, 6, "Atgal") {
                     close = true;
                 }
             });

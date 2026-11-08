@@ -195,6 +195,7 @@ pub extern "C" fn coop_host() -> i64 {
 }
 
 fn set_code(code: String) {
+    log_line(&format!("code: {code}"));
     let _ = clipboard_win::set_clipboard_string(&code);
     shared().lock().unwrap().code = Some(code);
 }
@@ -530,6 +531,12 @@ pub unsafe extern "C" fn coop_steam_host(name: *const u8, pw: *const u8) -> i64 
 #[no_mangle]
 pub unsafe extern "C" fn coop_steam_join(name: *const u8, pw: *const u8) -> i64 {
     start_steam(false, c_str(name), c_str(pw))
+}
+
+/// Our chosen look (0 = Grove Street member, 1.. = story character), set in the co-op menu.
+#[no_mangle]
+pub extern "C" fn coop_my_skin() -> i64 {
+    overlay::SKIN.load(std::sync::atomic::Ordering::SeqCst) as i64
 }
 
 /// 1 = we host the session (our story), 0 = we joined someone else's.
