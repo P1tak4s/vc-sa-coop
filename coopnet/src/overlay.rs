@@ -210,7 +210,6 @@ static mut CFS_FN: usize = 0; // the CustomFunctionFromString UFunction once see
 static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 static mut LAST_IDX: i32 = -1;
 static mut MAX_IDX: i32 = -1;
-static mut MENU_IS_MAIN: bool = false;
 static RENDERED: AtomicBool = AtomicBool::new(false);
 
 fn log_once(text: &str) {
@@ -249,6 +248,71 @@ unsafe fn fname(obj: *const u8) -> String {
     }
 }
 
+// ---- UE 4.26 reflection: walk a class's properties (FProperty list) to find which one says "COOP" ----------
+// UStruct: SuperStruct +0x40, ChildProperties +0x50. FField: Class +0x08, Next +0x20, Name +0x28.
+// FProperty: Offset_Internal +0x4C. FFieldClass: Name +0x00.
+
+unsafe fn fname_at(p: *const u8) -> String {
+    // same pool decoding as fname(), for an FName stored at `p`
+    let idx = *(p as *const u32);
+    let blk = *((BASE + NAME_POOL + 0x10 + (idx >> 16) as usize * 8) as *const usize);
+    if blk == 0 {
+        return String::new();
+    }
+    let e = (blk + (idx & 0xFFFF) as usize * 2) as *const u16;
+    let (len, wide) = ((*e >> 6) as usize, *e & 1 != 0);
+    if len == 0 || len > 256 {
+        return String::new();
+    }
+    if wide {
+        String::from_utf16_lossy(std::slice::from_raw_parts(e.add(1), len))
+    } else {
+        String::from_utf8_lossy(std::slice::from_raw_parts(e.add(1) as *const u8, len)).into_owned()
+    }
+}
+
+unsafe fn read_fstring(p: *const u8) -> Option<String> {
+    let data = *(p as *const *const u16);
+    let num = *(p.add(8) as *const i32);
+    (!data.is_null() && (1..256).contains(&num)).then(|| String::from_utf16_lossy(std::slice::from_raw_parts(data, num as usize - 1)))
+}
+
+/// Every string property of `obj` (own class and parents): (name, value). Logs the full property list once per class.
+unsafe fn string_props(obj: *const u8) -> Vec<(String, String)> {
+    let mut out = vec![];
+    let mut class = *(obj.add(0x10) as *const *const u8);
+    let first_class = class_of(obj);
+    let mut dump = vec![];
+    for _ in 0..6 {
+        if class.is_null() {
+            break;
+        }
+        let mut f = *(class.add(0x50) as *const *const u8);
+        let mut n = 0;
+        while !f.is_null() && n < 400 {
+            let fclass = *(f.add(0x08) as *const *const u8);
+            let ty = if fclass.is_null() { String::new() } else { fname_at(fclass) };
+            let name = fname_at(f.add(0x28));
+            let off = *(f.add(0x4C) as *const i32);
+            if ty == "StrProperty" && (0..0x4000).contains(&off) {
+                if let Some(v) = read_fstring(obj.add(off as usize)) {
+                    dump.push(format!("{name}:{ty}@{off:#x}={v}"));
+                    out.push((name, v));
+                } else {
+                    dump.push(format!("{name}:{ty}@{off:#x}"));
+                }
+            } else {
+                dump.push(format!("{name}:{ty}@{off:#x}"));
+            }
+            f = *(f.add(0x20) as *const *const u8);
+            n += 1;
+        }
+        class = *(class.add(0x40) as *const *const u8);
+    }
+    log_once(&format!("props of {first_class}: {}", dump.join(", ")));
+    out
+}
+
 unsafe extern "system" fn detour(this: *mut u8, func: *mut u8, parms: *mut u8) {
     if !func.is_null() {
         let f = func as usize;
@@ -271,17 +335,19 @@ unsafe extern "system" fn detour(this: *mut u8, func: *mut u8, parms: *mut u8) {
                 // the hovered/used entry's position in the visible list; co-op is always next to last (before exit)
                 let idx = *(parms as *const i32);
                 LAST_IDX = idx;
-                MENU_IS_MAIN = class_of(this) == "UI_MainMenu_C";
                 crate::log_line(&format!("InteractedButton idx={idx}"));
                 if idx > MAX_IDX { MAX_IDX = idx; }
                 log_once(&format!("InteractedButton on {} (outer {})", class_of(this), outer_of(this)));
             } else if name.contains("OnButtonClickedEvent") && !this.is_null() {
-                let (li, mi) = (LAST_IDX, MAX_IDX);
-                crate::log_line(&format!("click on {} idx={li} max={mi}", class_of(this)));
-                // measured 11-08: the title menu's co-op entry reports index 2 (the numbering skips hidden entries)
-                if MENU_IS_MAIN && li == 2 {
+                // the clicked button (or the widget that owns it) carries its menu entry's function string
+                let mut hit = string_props(this).iter().any(|(_, v)| v == "COOP");
+                let outer = *(this.add(0x20) as *const *const u8);
+                if !hit && !outer.is_null() {
+                    hit = string_props(outer).iter().any(|(_, v)| v == "COOP");
+                }
+                crate::log_line(&format!("click on {} coop={hit}", class_of(this)));
+                if hit {
                     OPEN.store(true, Ordering::SeqCst);
-                    crate::log_line("co-op entry: opening the co-op menu");
                 }
             } else if name.contains("Click") || name.contains("Press") || name.contains("Button") || name.contains("Selected") {
                 // first run: learn which menu events go through here (coopnet.log), so we can catch the click
