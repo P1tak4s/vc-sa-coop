@@ -4,6 +4,7 @@
 
 mod dialog;
 mod overlay;
+mod saves;
 mod steam;
 
 use proto::*;
@@ -495,6 +496,12 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
             return 1;
         }
         std::thread::spawn(dialog::hotkey_thread);
+        // every start begins with the player's own saves (a crash in co-op mode must not hide them)
+        std::thread::spawn(|| {
+            if saves::mode() == "coop" {
+                let _ = saves::switch_to("solo");
+            }
+        });
         std::panic::set_hook(Box::new(|info| log_line(&format!("panic: {info}"))));
         std::thread::spawn(move || unsafe {
             // the "co-op" entry of the game's menus, then the menu drawn into the game (DX12, else DX11)
