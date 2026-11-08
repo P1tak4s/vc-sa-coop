@@ -94,6 +94,8 @@ impl ImguiRenderLoop for CoopMenu {
             return;
         }
         let [dw, dh] = ui.io().display_size;
+        // dim the game behind, like its own pause screen
+        ui.get_background_draw_list().add_rect([0.0, 0.0], [dw, dh], [0.0, 0.0, 0.0, 0.62]).filled(true).build();
         // where the game's options panel sits: right of the menu list
         let (x0, y0, w) = (dw * 0.30, dh * 0.33, dw * 0.62);
         let fonts = ui.fonts().fonts().to_vec();
@@ -151,13 +153,13 @@ impl ImguiRenderLoop for CoopMenu {
                 };
 
                 row_bg(y, 0, "Sesijos pavadinimas");
-                ui.set_cursor_screen_pos([field_x, y + 8.0]);
+                ui.set_cursor_screen_pos([field_x, y + (ROW_H - ui.frame_height()) / 2.0]);
                 ui.set_next_item_width(field_w);
                 ui.input_text("##name", name).build();
                 y += ROW_H;
 
                 row_bg(y, 1, "Slaptažodis");
-                ui.set_cursor_screen_pos([field_x, y + 8.0]);
+                ui.set_cursor_screen_pos([field_x, y + (ROW_H - ui.frame_height()) / 2.0]);
                 ui.set_next_item_width(field_w);
                 ui.input_text("##pw", pw).password(true).build();
                 y += ROW_H;
