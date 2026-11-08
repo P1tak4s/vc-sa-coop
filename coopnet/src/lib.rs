@@ -443,6 +443,11 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if reason == 1 && !STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         let module = _module as usize;
+        // hooks only inside the game itself (tools such as tools/dll_test.py load this DLL too)
+        let in_game = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.eq_ignore_ascii_case("SanAndreas.exe"))).unwrap_or(false);
+        if !in_game {
+            return 1;
+        }
         std::thread::spawn(dialog::hotkey_thread);
         std::thread::spawn(move || unsafe {
             // the "co-op" entry of the game's menus, then the menu drawn into the game (DX12, else DX11)
