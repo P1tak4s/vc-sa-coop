@@ -47,8 +47,8 @@ title screen has been tried in the game yet.
 ## Install
 
 1. Download the release and unpack it anywhere.
-2. Run `sa-coop.exe`, pick **San Andreas** or **Vice City** and press **Įdiegti / atnaujinti modą** (install /
-   update); `sa-coop.exe --install vc` (or `sa`) does the same without the window. It finds the game in your Steam
+2. Unzip the release, run `VC-SA-Coop.exe`, pick **San Andreas** or **Vice City** and press **Įdiegti / atnaujinti modą** (install /
+   update); `VC-SA-Coop.exe --install vc` (or `sa`) does the same without the window. It finds the game in your Steam
    libraries and installs:
    - CLEO Redux and Ultimate ASI Loader (their licences are included)
    - `coopnet64.asi` and the game scripts
@@ -69,7 +69,7 @@ To remove (either game): delete `version.dll`, `cleo_redux64.asi`, `coopnet64.as
 | `coopnet/` | `coopnet64.asi`: network (Steam lobby + P2P or UDP), the in-game co-op screen (hudhook / Dear ImGui), the menu hook (UObject::ProcessEvent) |
 | `game/CLEO/` | CLEO Redux scripts: friend sync, passenger, revive, names, world sync, your car (`vc-coop.js` for Vice City) |
 | `coopnet/src/game.rs` | what differs per game: folders, addresses, menu button classes |
-| `launcher/` | `sa-coop.exe`: installer and IP-mode host/join |
+| `launcher/` | `VC-SA-Coop.exe`: installer, settings (graphics, handling, ReShade), IP-mode host/join |
 | `menu-mod/tool/` | MenuPatch (UAssetAPI): adds the co-op entry to the game's menu templates |
 | `tools/` | `dll_test.py` (loopback test without the game), `botas.py` (a test friend) |
 

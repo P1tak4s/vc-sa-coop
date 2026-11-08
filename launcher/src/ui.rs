@@ -176,7 +176,7 @@ fn title(ui: &mut egui::Ui) {
         ui.add(egui::Image::new(&tex).fit_to_exact_size(Vec2::splat(36.0)));
         ui.vertical(|ui| {
             ui.label(strong("VC / SA Co-op", 19.0));
-            ui.label(RichText::new(format!("Vice City ir San Andreas Definitive Edition co-op modas · v{}", env!("CARGO_PKG_VERSION"))).small().color(MUTED));
+            ui.label(RichText::new(format!("Vice City and San Andreas Definitive Edition co-op mod · v{}", env!("CARGO_PKG_VERSION"))).small().color(MUTED));
         });
     });
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 3.0), egui::Sense::hover());
@@ -211,7 +211,7 @@ impl App {
             work: Arc::new(Mutex::new(Work::Idle)),
             log: Arc::new(Mutex::new(vec![])),
             art: [None, None],
-            nick: "Žaidėjas".into(),
+            nick: "Player".into(),
             tab: Tab::Host,
             code: String::new(),
             hosting: None,
@@ -238,7 +238,7 @@ impl App {
         let (work, log, ctx) = (self.work.clone(), self.log.clone(), ctx.clone());
         let (which, graphics, handling, reshade) = (self.which, self.graphics, self.handling, self.reshade);
         log.lock().unwrap().clear();
-        *work.lock().unwrap() = Work::Busy(if remove { "Šalinama..." } else { "Diegiama..." });
+        *work.lock().unwrap() = Work::Busy(if remove { "Removing..." } else { "Installing..." });
         std::thread::spawn(move || {
             let g = &GAMES[which];
             let push = |ok: bool, t: String| {
@@ -247,7 +247,7 @@ impl App {
             };
             let ok = (|| {
                 if game_running(g) {
-                    push(false, format!("{} dabar veikia: uždaryk žaidimą ir bandyk dar kartą.", g.name));
+                    push(false, format!("{} is running: close the game and try again.", g.name));
                     return false;
                 }
                 if remove {
@@ -257,7 +257,7 @@ impl App {
                     return true;
                 }
                 match install(g, &dir) {
-                    Ok(lines) => lines.into_iter().for_each(|l| push(!l.contains("nepavyko"), l)),
+                    Ok(lines) => lines.into_iter().for_each(|l| push(!l.contains("failed"), l)),
                     Err(e) => {
                         push(false, e);
                         return false;
@@ -289,7 +289,7 @@ impl App {
     fn host(&mut self) {
         let sock = match UdpSocket::bind(("0.0.0.0", DEFAULT_PORT)) {
             Ok(s) => s,
-            Err(e) => return self.msg.push(format!("Nepavyko atidaryti {DEFAULT_PORT} prievado: {e}")),
+            Err(e) => return self.msg.push(format!("Could not open port {DEFAULT_PORT}: {e}")),
         };
         let key = random_key();
         let players: Players = Arc::default();
@@ -298,23 +298,23 @@ impl App {
         let internet_code = upnp(DEFAULT_PORT).map(|ip| make_code(ip.octets(), DEFAULT_PORT, key));
         let lan_code = lan_ip().map(|ip| make_code(ip.octets(), DEFAULT_PORT, key));
         if internet_code.is_none() {
-            self.msg.push(format!("Maršrutizatorius neatidarė prievado (UPnP). Draugui per internetą atidaryk UDP {DEFAULT_PORT} ranka."));
+            self.msg.push(format!("The router did not open the port (UPnP). For a friend over the internet, open UDP {DEFAULT_PORT} manually."));
         }
         if let Err(e) = write_session(&GAMES[self.which], SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)), key, &self.nick) {
-            self.msg.push(format!("Nepavyko įrašyti sesijos: {e}"));
+            self.msg.push(format!("Could not save the session: {e}"));
         }
         self.hosting = Some(Hosting { internet_code, lan_code, players });
     }
 
     fn join(&mut self) -> bool {
         let Some((ip, port, key)) = parse_code(&self.code) else {
-            self.msg.push("Kodas neteisingas: jame turi būti 16 simbolių.".into());
+            self.msg.push("Invalid code: it must have 16 characters.".into());
             return false;
         };
         match write_session(&GAMES[self.which], SocketAddr::from((ip, port)), key, &self.nick) {
             Ok(()) => true,
             Err(e) => {
-                self.msg.push(format!("Nepavyko įrašyti sesijos: {e}"));
+                self.msg.push(format!("Could not save the session: {e}"));
                 false
             }
         }
@@ -369,52 +369,52 @@ impl eframe::App for App {
 impl App {
     fn body(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, work: &Work, busy: bool) {
         let g = &GAMES[self.which];
-        card(ui, "Žaidimas", |ui| {
+        card(ui, "Game", |ui| {
             if self.games.iter().all(|x| x.is_none()) {
-                ui.colored_label(BAD, "Steam bibliotekose neradau nei Vice City, nei San Andreas Definitive Edition.");
-                ui.small("Reikia legalios Steam versijos.");
+                ui.colored_label(BAD, "Found neither Vice City nor San Andreas Definitive Edition in your Steam libraries.");
+                ui.small("A legal Steam copy is required.");
                 return;
             }
             if let Some(dir) = &self.games[self.which] {
-                let state = if installed(g, dir) { ("Modas įdiegtas", OK) } else { ("Modas dar neįdiegtas", MUTED) };
+                let state = if installed(g, dir) { ("Mod installed", OK) } else { ("Mod not installed yet", MUTED) };
                 ui.colored_label(state.1, state.0);
                 ui.label(RichText::new(dir.display().to_string()).small().color(MUTED));
             }
         });
         let Some(dir) = self.games[self.which].clone() else { return };
         ui.add_space(4.0);
-        card(ui, "Nustatymai", |ui| {
+        card(ui, "Settings", |ui| {
             ui.add_enabled_ui(!busy, |ui| {
                 if graphics_level(g).is_none() {
-                    ui.label(RichText::new("Grafika: tavo paties Engine.ini, jo nekeičiu.").color(MUTED));
+                    ui.label(RichText::new("Graphics: your own Engine.ini, left untouched.").color(MUTED));
                 } else {
                     ui.horizontal(|ui| {
-                        ui.label("Grafika");
+                        ui.label("Graphics");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             for i in (0..GRAPHICS.len()).rev() {
-                                let name = if i == 0 { "Originali" } else { GRAPHICS[i].0 };
+                                let name = if i == 0 { "Original" } else { GRAPHICS[i].0 };
                                 ui.selectable_value(&mut self.graphics, i, name);
                             }
                         });
                     });
                 }
                 if is_vc(g) {
-                    ui.checkbox(&mut self.handling, "Geresnis mašinų valdymas (daugiau sukibimo, ABS)");
+                    ui.checkbox(&mut self.handling, "Better car handling (more grip, ABS)");
                 }
                 if reshade_on(&dir).is_none() {
-                    ui.label(RichText::new("ReShade: žaidime jau yra kito modo dxgi.dll.").color(MUTED));
+                    ui.label(RichText::new("ReShade: the game already has another mod's dxgi.dll.").color(MUTED));
                 } else {
-                    ui.checkbox(&mut self.reshade, "ReShade spalvos (Home: meniu, Scroll Lock: išjungti)");
+                    ui.checkbox(&mut self.reshade, "ReShade colors (Home: menu, Scroll Lock: off)");
                 }
             });
         });
         ui.add_space(4.0);
-        egui::CollapsingHeader::new(RichText::new("Ką tiksliai pakeis").color(MUTED)).show(ui, |ui| {
+        egui::CollapsingHeader::new(RichText::new("What exactly changes").color(MUTED)).show(ui, |ui| {
             for t in [
-                "Žaidimo aplanke Gameface\\Binaries\\Win64: version.dll (ASI įkėliklis), cleo_redux64.asi, coopnet64.asi, CLEO aplankas; jei pažymėta, ReShade (dxgi.dll).",
-                "Gameface\\Content\\Paks\\~mods: co-op įrašas meniu ir, jei pažymėta, valdymas. Abu sukuriami iš tavo paties žaidimo failų.",
-                "Documents\\Rockstar Games: grafikos eilutės Engine.ini ir CustomSettings.ini. Tavo paties įrašai neliečiami.",
-                "Administratoriaus teisių nereikia. „Pašalinti“ viską atšaukia.",
+                "In the game folder Gameface\\Binaries\\Win64: version.dll (ASI loader), cleo_redux64.asi, coopnet64.asi, the CLEO folder; if ticked, ReShade (dxgi.dll).",
+                "Gameface\\Content\\Paks\\~mods: the co-op menu entry and, if ticked, handling. Both are built from your own game files.",
+                "Documents\\Rockstar Games: graphics lines in Engine.ini and CustomSettings.ini. Your own entries stay untouched.",
+                "No admin rights needed. \"Uninstall\" undoes everything.",
             ] {
                 ui.label(RichText::new(format!("• {t}")).small());
             }
@@ -423,7 +423,7 @@ impl App {
         let lines = self.log.lock().unwrap().clone();
         if !lines.is_empty() || busy {
             ui.add_space(4.0);
-            card(ui, "Eiga", |ui| {
+            card(ui, "Progress", |ui| {
                 for (ok, t) in &lines {
                     ui.horizontal_wrapped(|ui| {
                         ui.colored_label(if *ok { OK } else { BAD }, if *ok { "✔" } else { "✖" });
@@ -441,78 +441,78 @@ impl App {
         ui.add_space(10.0);
         let is_in = installed(g, &dir);
         ui.horizontal(|ui| {
-            let main = if is_in { "IŠSAUGOTI" } else { "ĮDIEGTI" };
+            let main = if is_in { "SAVE" } else { "INSTALL" };
             let b = egui::Button::new(strong(main, 14.5).color(Color32::BLACK)).fill(ACCENT).min_size(Vec2::new(150.0, 38.0));
             if ui.add_enabled(!busy, b).clicked() {
                 self.run(false, ctx);
             }
-            if is_in && ui.add_enabled(!busy, egui::Button::new(strong("ŽAISTI", 14.5)).min_size(Vec2::new(110.0, 38.0))).clicked() {
+            if is_in && ui.add_enabled(!busy, egui::Button::new(strong("PLAY", 14.5)).min_size(Vec2::new(110.0, 38.0))).clicked() {
                 start_game(g);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if is_in && ui.add_enabled(!busy, egui::Button::new(RichText::new("Pašalinti").color(MUTED)).frame(false)).clicked() {
+                if is_in && ui.add_enabled(!busy, egui::Button::new(RichText::new("Uninstall").color(MUTED)).frame(false)).clicked() {
                     self.run(true, ctx);
                 }
             });
         });
         if let Work::Done(true) = work {
             if is_in {
-                ui.label(RichText::new("Paleisk žaidimą, įkelk išsaugojimą, tada ESC → CO-OP: sesijos pavadinimas ir slaptažodis. Draugas įveda tuos pačius.").small().color(MUTED));
+                ui.label(RichText::new("Start the game, load a save, then ESC → CO-OP: session name and password. Your friend enters the same.").small().color(MUTED));
             }
         }
         ui.add_space(12.0);
-        egui::CollapsingHeader::new(RichText::new("Žaisti per IP kodą (be Steam)").color(MUTED)).show(ui, |ui| self.ip_mode(ui, ctx));
+        egui::CollapsingHeader::new(RichText::new("Play with an IP code (no Steam)").color(MUTED)).show(ui, |ui| self.ip_mode(ui, ctx));
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.hyperlink_to(RichText::new("Atviras kodas").small(), REPO);
-            ui.label(RichText::new("· MIT · Neoficialus modas, ne Rockstar Games ir ne Take-Two produktas.").small().color(MUTED));
+            ui.hyperlink_to(RichText::new("Open source").small(), REPO);
+            ui.label(RichText::new("· MIT · Unofficial mod, not a Rockstar Games or Take-Two product.").small().color(MUTED));
         });
     }
 
     fn ip_mode(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let g = &GAMES[self.which];
         ui.horizontal(|ui| {
-            ui.label("Slapyvardis:");
+            ui.label("Nickname:");
             ui.add(egui::TextEdit::singleline(&mut self.nick).char_limit(NICK_LEN));
         });
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Host, "Kurti žaidimą");
-            ui.selectable_value(&mut self.tab, Tab::Join, "Prisijungti");
+            ui.selectable_value(&mut self.tab, Tab::Host, "Host game");
+            ui.selectable_value(&mut self.tab, Tab::Join, "Join");
         });
         match self.tab {
             Tab::Host => match &self.hosting {
                 None => {
-                    ui.label(RichText::new("Serveris veiks šiame kompiuteryje, draugui duosi kodą.").small().color(MUTED));
-                    if ui.button("Kurti žaidimą").clicked() {
+                    ui.label(RichText::new("The server runs on this PC; you give your friend a code.").small().color(MUTED));
+                    if ui.button("Host game").clicked() {
                         self.host();
                     }
                 }
                 Some(h) => {
-                    for (label, code) in [("Kodas draugui per internetą:", &h.internet_code), ("Kodas tame pačiame tinkle:", &h.lan_code)] {
+                    for (label, code) in [("Code for a friend over the internet:", &h.internet_code), ("Code on the same network:", &h.lan_code)] {
                         if let Some(code) = code {
                             ui.label(label);
                             ui.horizontal(|ui| {
                                 ui.monospace(code);
-                                if ui.button("Kopijuoti").clicked() {
+                                if ui.button("Copy").clicked() {
                                     ctx.copy_text(code.clone());
                                 }
                             });
                         }
                     }
                     let players = h.players.lock().unwrap().clone();
-                    ui.label(format!("Prisijungę: {}", if players.is_empty() { "dar niekas".into() } else { players.join(", ") }));
-                    if ui.button("Paleisti žaidimą").clicked() {
+                    ui.label(format!("Connected: {}", if players.is_empty() { "nobody yet".into() } else { players.join(", ") }));
+                    if ui.button("Start game").clicked() {
                         start_game(g);
                     }
-                    ui.label(RichText::new("Nelaikyk šio lango uždaryto, kol žaidžiat: jame veikia serveris.").small().color(MUTED));
+                    ui.label(RichText::new("Keep this window open while you play: it runs the server.").small().color(MUTED));
                 }
             },
             Tab::Join => {
-                ui.label("Draugo kodas:");
+                ui.label("Friend's code:");
                 ui.text_edit_singleline(&mut self.code);
-                if ui.button("Prisijungti ir paleisti žaidimą").clicked() && self.join() {
+                if ui.button("Join and start game").clicked() && self.join() {
                     start_game(g);
-                    self.msg.push("Žaidimas paleidžiamas. Įkėlus išsaugojimą prisijungsi automatiškai.".into());
+                    self.msg.push("Starting the game. You will join automatically after loading a save.".into());
                 }
             }
         }

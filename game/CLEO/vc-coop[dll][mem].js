@@ -121,9 +121,9 @@ const COWER = 15;                   // WaitState PlayAnimCower: how a downed pla
 const WEAPON_MODEL = [-1, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 270, 271, 272, 273, 274, 275, 277,
                       278, 279, 281, 282, 283, 284, 280, 276, 285, 286, 287, 288, 289, 290, 291, 289, 292];
 try {
-  FxtStore.insert("COOPDN1", "TU SUZEISTAS! Draugas gali atgaivinti: ~1~ s");
-  FxtStore.insert("COOPDN2", "DRAUGAS SUZEISTAS! Atgaivink: ~1~ s");
-  FxtStore.insert("COOPDN3", "Laikyk E, kad atgaivintum: ~1~ %");
+  FxtStore.insert("COOPDN1", "YOU ARE DOWN! Your friend can revive you: ~1~ s");
+  FxtStore.insert("COOPDN2", "FRIEND IS DOWN! Revive them: ~1~ s");
+  FxtStore.insert("COOPDN3", "Hold E to revive: ~1~ %");
 } catch (e) {}
 function banner(key, num, y) {
   try {
@@ -300,7 +300,7 @@ function goDown(me, now) {
   me.setProofs(true, true, true, true, true);
   player.setControl(false);
   try { me.setWaitState(COWER, BLEED_OUT); } catch (e) {}
-  say("VC Co-op: tu suzeistas. Draugas gali tave atgaivinti (30 s)");
+  say("VC Co-op: you are down. Your friend can revive you (30 s)");
 }
 
 function getUp(me, health) {
@@ -317,7 +317,7 @@ function handleOwnHealth(me, now) {
     return;
   }
   banner("COOPDN1", (BLEED_OUT - (now - downedAt)) / 1000);
-  if (api.coop_take_revived()) { getUp(me, 60); say("VC Co-op: draugas tave atgaivino"); return; }
+  if (api.coop_take_revived()) { getUp(me, 60); say("VC Co-op: your friend revived you"); return; }
   if (now - downedAt > BLEED_OUT || !anyFriend()) { getUp(me, 0); } // nobody came: the game's own death
 }
 
@@ -520,7 +520,7 @@ function attachExtra(ped, car, weapon) {
   // bike: behind the passenger, facing forward; car: on the trunk lid, facing back (shoot at whoever follows)
   if (bike) ped.attachToCar(car, 0, -0.95, 0.55, 0, 90, weapon || 0);
   else ped.attachToCar(car, 0, -1.9, 0.75, 2, 150, weapon || 0);
-  return bike ? "ant motociklo galo" : "ant bagazines";
+  return bike ? "on the back of the bike" : "on the trunk";
 }
 
 function detachExtra(ped) {
@@ -614,7 +614,7 @@ function downRemote(r, s, slot, me) {
     r.ped.setCoordinates(s.x, s.y, s.z);
     placeAt(pedPtr(r.ped), s.x, s.y, s.z);
     try { r.ped.setWaitState(COWER, BLEED_OUT); } catch (e) {}
-    say("VC Co-op: draugas suzeistas! Prieik ir spausk E");
+    say("VC Co-op: your friend is down! Go to them and press E");
   }
   const left = (BLEED_OUT - (Date.now() - (r.downAt || Date.now()))) / 1000;
   banner("COOPDN2", left);
@@ -718,7 +718,7 @@ function tryRideAlong(me) {
     try { weapon = me.getCurrentWeapon(); } catch (e) {}
     const where = attachExtra(me, best.car, weapon);
     riding = { car: best.car, slot: bestSlot };
-    say(`VC Co-op: vietu nera, vaziuoji ${where}. F - nulipti`);
+    say(`VC Co-op: no free seats, riding ${where}. F - get off`);
   } catch (e) { noteError(`extra seat G: ${e}`); }
 }
 
@@ -774,7 +774,7 @@ function tellWorld(mySlot, t) {
     }
     if (!m && missionWas && !isGuest() && retry.at && retry.name === missionWas) {
       const passed = S.lastPassed && readStr(S.lastPassed, 8, true) !== retry.passed;
-      if (!passed) { retry.until = t + 15000; say("VC Co-op: misija nepavyko. R - kartoti kartu su draugu (15 s)"); }
+      if (!passed) { retry.until = t + 15000; say("VC Co-op: mission failed. R - retry with your friend (15 s)"); }
     }
     missionWas = m; sendEvent(EV.MISSION, m);
   }
@@ -797,7 +797,7 @@ function retryTick(me, t) {
     if (me.isInAnyCar()) me.warpFromCarToCoord(p.x, p.y, p.z);
     else { me.setCoordinates(p.x, p.y, p.z); placeAt(pedPtr(me), p.x, p.y, p.z); }
     sendEvent(EV_RETRY, `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`);
-    say(`VC Co-op: kartojam ${retry.name}`);
+    say(`VC Co-op: retrying ${retry.name}`);
   } catch (e) { noteError(`retry: ${e}`); }
 }
 
@@ -809,7 +809,7 @@ function onRetry(text, me) {
     if (riding) stopRiding(me);
     if (me.isInAnyCar()) me.warpFromCarToCoord(x + 2, y, z);
     else { me.setCoordinates(x + 2, y, z); placeAt(pedPtr(me), x + 2, y, z); }
-    say("VC Co-op: draugas kartoja misija, tu salia jo");
+    say("VC Co-op: your friend is retrying the mission, you are next to them");
   } catch (e) { noteError(`retry here: ${e}`); }
 }
 
@@ -823,10 +823,10 @@ function hearWorld() {
     const text = readStr(evBuf, 127, false);
     if (kind === EV.WEATHER) { heard.weather = text; const w = parseInt(text, 10); if (w >= 0 && w < 7) try { Weather.ForceNow(w); } catch (e) {} }
     else if (kind === EV_RETRY) onRetry(text, player.getChar());
-    else if (kind === EV.CUTSCENE) { heard.cut = text; say(`VC Co-op: draugas ziuri pjuvi (${text})`); }
+    else if (kind === EV.CUTSCENE) { heard.cut = text; say(`VC Co-op: your friend is watching a cutscene (${text})`); }
     else if (kind === 4 || kind === 5) onMissionEvent(kind, text);
     else if (kind === 6 || kind === 7) onStoryEvent(kind, text);
-    else if (kind === EV.MISSION) { heard.mission = text || "-"; say(text ? `VC Co-op: draugas pradejo misija (${text})` : "VC Co-op: draugo misija baigesi"); }
+    else if (kind === EV.MISSION) { heard.mission = text || "-"; say(text ? `VC Co-op: your friend started a mission (${text})` : "VC Co-op: your friend's mission ended"); }
     // a friend's cutscene is told, not replayed: a Vice City cutscene needs the objects its mission script creates
   }
 }
@@ -974,7 +974,7 @@ function onMissionEvent(kind, text) {
     const earned = parseInt(text, 10);
     if (earned > 0 && earned < 10000000) {
       Memory.WriteI32(S.money, Memory.ReadI32(S.money, false, true) + earned, false, true);
-      say(`VC Co-op: misija baigta, gavai $${earned}`);
+      say(`VC Co-op: mission passed, you got $${earned}`);
     }
   }
 }
@@ -1097,19 +1097,19 @@ while (true) {
 
   if (!started) {
     started = true;
-    if (!api.coop_start() && api.coop_status() !== 2) say("VC Co-op: F9 arba meniu CO-OP - co-op langas");
+    if (!api.coop_start() && api.coop_status() !== 2) say("VC Co-op: F9 or menu CO-OP - co-op window");
   }
   if (t - lastCodeCheck > 1000) {
     lastCodeCheck = t;
     const code = readCode();
-    if (code && code !== lastCode) { lastCode = code; say(`VC Co-op kodas (nukopijuotas): ${code}`); }
+    if (code && code !== lastCode) { lastCode = code; say(`VC Co-op code (copied): ${code}`); }
   }
 
   const status = api.coop_status();
   if (status !== announced) {
     announced = status;
-    if (status === 2) say("VC Co-op: prisijungta");
-    if (status === 3) say("VC Co-op: serveris neprieme (blogas kodas arba nera vietu)");
+    if (status === 2) say("VC Co-op: connected");
+    if (status === 3) say("VC Co-op: server refused (wrong code or no free slots)");
   }
   if (status !== 2) continue;
 

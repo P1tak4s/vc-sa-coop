@@ -57,10 +57,10 @@ const GAMES: [GameInfo; 2] = [
 /// Graphics levels: Engine.ini files written to Documents\Rockstar Games\<game>\Config\WindowsNoEditor.
 /// Only a file of ours (its first line says "Co-op graphics") is ever replaced or removed.
 const GRAPHICS: [(&str, &str); 4] = [
-    ("Išjungta", ""),
-    ("Paprasta", include_str!("../../game-config/Engine.ini")),
-    ("Gražu", include_str!("../../game-config/Engine-grazu.ini")),
-    ("Maksimum", include_str!("../../game-config/Engine-maksimum.ini")),
+    ("Original", ""),
+    ("Simple", include_str!("../../game-config/Engine.ini")),
+    ("Nice", include_str!("../../game-config/Engine-grazu.ini")),
+    ("Maximum", include_str!("../../game-config/Engine-maksimum.ini")),
 ];
 
 fn engine_ini(g: &GameInfo) -> Option<PathBuf> {
@@ -113,9 +113,9 @@ fn set_custom_settings(g: &GameInfo, level: usize) -> Result<(), String> {
 }
 
 fn set_graphics(g: &GameInfo, level: usize) -> Result<String, String> {
-    let ini = engine_ini(g).ok_or("nerastas Documents aplankas")?;
+    let ini = engine_ini(g).ok_or("Documents folder not found")?;
     if graphics_level(g).is_none() {
-        return Err(format!("{} yra tavo paties: nekeičiu (ištrink jį, jei nori mūsų nustatymų)", ini.display()));
+        return Err(format!("{} is your own: left as is (delete it to use ours)", ini.display()));
     }
     let (name, text) = GRAPHICS[level.min(GRAPHICS.len() - 1)];
     if is_vc(g) {
@@ -127,7 +127,7 @@ fn set_graphics(g: &GameInfo, level: usize) -> Result<String, String> {
         std::fs::create_dir_all(ini.parent().unwrap()).map_err(|e| e.to_string())?;
         std::fs::write(&ini, text).map_err(|e| e.to_string())?;
     }
-    Ok(format!("Grafika: {name} (įsigalios kitą kartą paleidus žaidimą)"))
+    Ok(format!("Graphics: {name} (applies next time the game starts)"))
 }
 
 fn is_vc(g: &GameInfo) -> bool {
@@ -160,7 +160,7 @@ fn main() -> eframe::Result {
         let better = args.get(i + 2).is_none_or(|v| v != "0");
         let line = match find_game(g) {
             Some(dir) => set_handling(g, &dir, better).unwrap_or_else(|e| e),
-            None => format!("{} nerastas", g.name),
+            None => format!("{} not found", g.name),
         };
         let dir = data_dir(g);
         let _ = std::fs::create_dir_all(&dir);
@@ -172,7 +172,7 @@ fn main() -> eframe::Result {
         let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
         let lines = match find_game(g) {
             Some(dir) => uninstall(g, &dir),
-            None => vec![format!("{} nerastas", g.name)],
+            None => vec![format!("{} not found", g.name)],
         };
         let dir = data_dir(g);
         let _ = std::fs::create_dir_all(&dir);
@@ -185,14 +185,14 @@ fn main() -> eframe::Result {
         let on = args.get(i + 2).is_none_or(|v| v != "0");
         let line = match find_game(g) {
             Some(dir) => set_reshade(&dir, on).unwrap_or_else(|e| e),
-            None => format!("{} nerastas", g.name),
+            None => format!("{} not found", g.name),
         };
         let dir = data_dir(g);
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(dir.join("reshade.log"), line);
         return Ok(());
     }
-    // sa-coop.exe --grafika sa|vc 0..3 (Išjungta, Paprasta, Gražu, Maksimum)
+    // sa-coop.exe --grafika sa|vc 0..3 (Original, Simple, Nice, Maximum)
     if let Some(i) = args.iter().position(|a| a == "--grafika") {
         let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
         let level = args.get(i + 2).and_then(|v| v.parse().ok()).unwrap_or(1);
@@ -206,7 +206,7 @@ fn main() -> eframe::Result {
         let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
         let lines = match find_game(g) {
             Some(dir) => install(g, &dir).unwrap_or_else(|e| vec![e]),
-            None => vec![format!("{} nerastas Steam bibliotekose", g.name)],
+            None => vec![format!("{} not found in Steam libraries", g.name)],
         };
         let dir = data_dir(g);
         let _ = std::fs::create_dir_all(&dir);
@@ -260,7 +260,7 @@ fn copy_tree(g: &GameInfo, from: &Path, to: &Path, log: &mut Vec<String>) -> std
             // another mod's ASI loader under the same name: keep a copy instead of losing it
             if entry.file_name() == "version.dll" && dst.is_file() && std::fs::read(&dst)? != std::fs::read(entry.path())? {
                 std::fs::copy(&dst, dst.with_extension("dll.sa-coop-backup"))?;
-                log.push("Ankstesnis version.dll išsaugotas kaip version.dll.sa-coop-backup".into());
+                log.push("Previous version.dll saved as version.dll.sa-coop-backup".into());
             }
             std::fs::copy(entry.path(), &dst)?;
         }
@@ -271,15 +271,15 @@ fn copy_tree(g: &GameInfo, from: &Path, to: &Path, log: &mut Vec<String>) -> std
 fn install(g: &GameInfo, game: &Path) -> Result<Vec<String>, String> {
     let src = bundle_dir();
     if !src.join("coopnet64.asi").is_file() {
-        return Err(format!("Nerastas modo paketas: {}", src.display()));
+        return Err(format!("Mod package not found: {}", src.display()));
     }
     let mut log = vec![];
-    copy_tree(g, &src, game, &mut log).map_err(|e| format!("Nepavyko nukopijuoti: {e}"))?;
+    copy_tree(g, &src, game, &mut log).map_err(|e| format!("Copy failed: {e}"))?;
     // files of older versions: a second copy of the DLL would run its own, separate network
     for old in ["coopnet64.dll", r"CLEO\sa-coop.js", r"CLEO\coop-test.js", r"CLEO\mano-masina.js"] {
         let _ = std::fs::remove_file(game.join(old));
     }
-    log.push("Modas įdiegtas.".into());
+    log.push("Mod installed.".into());
     extras(g, game, &mut log);
     Ok(log)
 }
@@ -291,7 +291,7 @@ fn build_menu_pak(g: &GameInfo, extra: &Path, gameface: &Path, mods: &Path) -> R
     let rel = g.menu_rel;
     let (repak, patch) = (extra.join("repak.exe"), extra.join("MenuPatch.exe"));
     if !repak.is_file() || !patch.is_file() {
-        return Err("trūksta repak.exe arba MenuPatch.exe".into());
+        return Err("repak.exe or MenuPatch.exe is missing".into());
     }
     let pak = gameface.join(r"Content\Paks\pakchunk0-WindowsNoEditor.pak");
     let tmp = std::env::temp_dir().join(format!("{}-menu", g.data));
@@ -327,8 +327,8 @@ fn extras(g: &GameInfo, win64: &Path, log: &mut Vec<String>) {
     let Some(gameface) = win64.parent().and_then(|p| p.parent()) else { return };
     let mods = gameface.join(r"Content\Paks\~mods");
     match build_menu_pak(g, &extra, gameface, &mods) {
-        Ok(()) => log.push("„co-op“ įrašas meniu įdiegtas.".into()),
-        Err(e) => log.push(format!("„co-op“ meniu įrašo nepavyko sukurti: {e}")),
+        Ok(()) => log.push("\"co-op\" menu entry installed.".into()),
+        Err(e) => log.push(format!("\"co-op\" menu entry failed: {e}")),
     }
     if let Some(docs) = docs_dir(g).map(|d| d.join(r"Config\WindowsNoEditor")) {
         if !docs.join("Engine.ini").exists() {
@@ -350,7 +350,7 @@ fn extras(g: &GameInfo, win64: &Path, log: &mut Vec<String>) {
                 .output();
             if let Ok(o) = out {
                 if o.status.success() && o.stdout.len() > 1000 && std::fs::write(fonts.join(format!("{f}.ttf")), &o.stdout).is_ok() {
-                    log.push(format!("Šriftas {f} paimtas iš žaidimo."));
+                    log.push(format!("Font {f} taken from the game."));
                 }
             }
         }
@@ -407,19 +407,19 @@ fn retune_handling(text: &str) -> (String, usize) {
 fn set_handling(g: &GameInfo, win64: &Path, better: bool) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     if !is_vc(g) {
-        return Err("valdymo pataisa kol kas tik Vice City".into());
+        return Err("the handling fix is Vice City only for now".into());
     }
-    let pak_out = handling_pak(win64).ok_or("nerastas žaidimo aplankas")?;
+    let pak_out = handling_pak(win64).ok_or("game folder not found")?;
     if !better {
         let _ = std::fs::remove_file(&pak_out);
-        return Ok("Valdymas: originalus (įsigalios kitą kartą paleidus žaidimą)".into());
+        return Ok("Handling: original (applies next time the game starts)".into());
     }
     let repak = bundle_dir().with_file_name("extra").join("repak.exe");
-    let gameface = win64.parent().and_then(|p| p.parent()).ok_or("nerastas Gameface")?;
+    let gameface = win64.parent().and_then(|p| p.parent()).ok_or("Gameface not found")?;
     let pak = gameface.join(r"Content\Paks\pakchunk0-WindowsNoEditor.pak");
     let o = std::process::Command::new(&repak).arg("get").arg(&pak).arg(HANDLING_REL).creation_flags(0x0800_0000).output().map_err(|e| e.to_string())?;
     if !o.status.success() || o.stdout.len() < 1000 {
-        return Err(format!("nepavyko paimti handling.cfg: {}", String::from_utf8_lossy(&o.stderr).trim()));
+        return Err(format!("could not read handling.cfg: {}", String::from_utf8_lossy(&o.stderr).trim()));
     }
     let (text, n) = retune_handling(&String::from_utf8_lossy(&o.stdout));
     let tmp = std::env::temp_dir().join(format!("{}-handling", g.data));
@@ -436,12 +436,12 @@ fn set_handling(g: &GameInfo, win64: &Path, better: bool) -> Result<String, Stri
         .status()
         .map_err(|e| e.to_string())?;
     if !st.success() {
-        return Err("repak pack nepavyko".into());
+        return Err("repak pack failed".into());
     }
     std::fs::create_dir_all(pak_out.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::copy(&out, &pak_out).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_dir_all(&tmp);
-    Ok(format!("Valdymas: geresnis, {n} mašinų (įsigalios kitą kartą paleidus žaidimą)"))
+    Ok(format!("Handling: better, {n} cars (applies next time the game starts)"))
 }
 
 // ---- ReShade (extra\reshade: the official ReShade64.dll, our VCCoop look) as dxgi.dll next to the game ----------
@@ -462,16 +462,16 @@ fn reshade_on(win64: &Path) -> Option<bool> {
 fn set_reshade(win64: &Path, on: bool) -> Result<String, String> {
     let src = reshade_src();
     match reshade_on(win64) {
-        None => return Err("žaidimo aplanke jau yra kito modo dxgi.dll: nekeičiu".into()),
-        Some(now) if now == on => return Ok(format!("ReShade jau {}", if on { "įjungtas" } else { "išjungtas" })),
+        None => return Err("the game folder already has another mod's dxgi.dll: left as is".into()),
+        Some(now) if now == on => return Ok(format!("ReShade already {}", if on { "on" } else { "off" })),
         _ => {}
     }
     if !on {
         std::fs::remove_file(win64.join("dxgi.dll")).map_err(|e| e.to_string())?;
-        return Ok("ReShade išjungtas".into());
+        return Ok("ReShade off".into());
     }
     if !src.join("ReShade64.dll").is_file() {
-        return Err("pakete nėra extra\\reshade".into());
+        return Err("the package has no extra\\reshade".into());
     }
     let mut log = vec![];
     if !win64.join("ReShade.ini").exists() {
@@ -479,7 +479,7 @@ fn set_reshade(win64: &Path, on: bool) -> Result<String, String> {
     }
     copy_tree(&GAMES[0], &src.join("reshade-shaders"), &win64.join("reshade-shaders"), &mut log).map_err(|e| e.to_string())?;
     std::fs::copy(src.join("ReShade64.dll"), win64.join("dxgi.dll")).map_err(|e| e.to_string())?;
-    Ok("ReShade įjungtas: Home atidaro jo meniu, Scroll Lock išjungia efektus".into())
+    Ok("ReShade on: Home opens its menu, Scroll Lock turns effects off".into())
 }
 
 /// Remove what install() put in: every file of the bundle (same relative path), our paks, our ReShade and our
@@ -508,26 +508,26 @@ fn uninstall(g: &GameInfo, win64: &Path) -> Vec<String> {
     let backup = win64.join("version.dll.sa-coop-backup");
     if backup.is_file() && !win64.join("version.dll").exists() {
         let _ = std::fs::rename(&backup, win64.join("version.dll"));
-        log.push("Grąžintas ankstesnis version.dll".into());
+        log.push("Previous version.dll restored".into());
     }
-    log.push(format!("Pašalinta failų: {n}"));
+    log.push(format!("Files removed: {n}"));
     if reshade_on(win64) == Some(true) {
         let _ = set_reshade(win64, false);
         let _ = std::fs::remove_dir_all(win64.join("reshade-shaders"));
         let _ = std::fs::remove_file(win64.join("ReShade.ini"));
-        log.push("ReShade pašalintas".into());
+        log.push("ReShade removed".into());
     }
     if let Some(mods) = win64.parent().and_then(|p| p.parent()).map(|p| p.join(r"Content\Paks\~mods")) {
         for pak in ["coop_P.pak", "coop_handling_P.pak"] {
             if std::fs::remove_file(mods.join(pak)).is_ok() {
-                log.push(format!("Pašalinta {pak}"));
+                log.push(format!("Removed {pak}"));
             }
         }
         let _ = std::fs::remove_dir(&mods);
     }
     if graphics_level(g).is_some() {
         let _ = set_graphics(g, 0);
-        log.push("Grafikos nustatymai grąžinti".into());
+        log.push("Graphics settings restored".into());
     }
     log
 }
