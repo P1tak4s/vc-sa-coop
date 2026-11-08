@@ -1,0 +1,11 @@
+[package]
+name = "coopnet"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "coopnet64"
+crate-type = ["cdylib"]
+
+[dependencies]
+proto = { path = "../proto" }
