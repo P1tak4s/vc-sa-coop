@@ -78,6 +78,40 @@ fn install(game: &Path) -> Result<Vec<String>, String> {
     Ok(log)
 }
 
+/// The co-op entry for the game's menus, made on this PC from this PC's own game files: the two menu templates come
+/// out of pakchunk0 (repak), MenuPatch adds "co-op" (FunctionToCallOnPress = COOP), repak packs them as a mod pak.
+fn build_menu_pak(extra: &Path, gameface: &Path, mods: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const REL: &str = "Gameface/Content/SanAndreas/UI/MenuTemplates";
+    let (repak, patch) = (extra.join("repak.exe"), extra.join("MenuPatch.exe"));
+    if !repak.is_file() || !patch.is_file() {
+        return Err("trūksta repak.exe arba MenuPatch.exe".into());
+    }
+    let pak = gameface.join(r"Content\Paks\pakchunk0-WindowsNoEditor.pak");
+    let tmp = std::env::temp_dir().join("sa-coop-menu");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let (src, dst) = (tmp.join("src"), tmp.join("dst"));
+    std::fs::create_dir_all(src.join(REL)).map_err(|e| e.to_string())?;
+    let run = |exe: &Path, args: &[&std::ffi::OsStr]| -> Result<Vec<u8>, String> {
+        let o = std::process::Command::new(exe).args(args).creation_flags(0x0800_0000).output().map_err(|e| e.to_string())?;
+        if o.status.success() { Ok(o.stdout) } else { Err(String::from_utf8_lossy(&o.stderr).trim().to_string()) }
+    };
+    for m in ["GTASA_MainMenu", "GTASA_PauseMenu"] {
+        for ext in ["uasset", "uexp"] {
+            let inner = format!("{REL}/{m}.{ext}");
+            let bytes = run(&repak, &["get".as_ref(), pak.as_os_str(), inner.as_ref()])?;
+            std::fs::write(src.join(REL).join(format!("{m}.{ext}")), bytes).map_err(|e| e.to_string())?;
+        }
+    }
+    run(&patch, &["patch".as_ref(), src.as_os_str(), dst.as_os_str()])?;
+    let out = tmp.join("coop_P.pak");
+    run(&repak, &["pack".as_ref(), "--version".as_ref(), "V11".as_ref(), "--mount-point".as_ref(), "../../../".as_ref(), dst.as_os_str(), out.as_os_str()])?;
+    std::fs::create_dir_all(mods).map_err(|e| e.to_string())?;
+    std::fs::copy(&out, mods.join("coop_P.pak")).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
 /// Beside `game\`: `extra\coop_P.pak` (the co-op entry in the game's menus), `extra\Engine.ini` (sharper, further
 /// graphics; only if the player has none) and `extra\repak.exe`, which takes the menu fonts out of this PC's own
 /// copy of the game (they are never shipped with the mod).
@@ -85,8 +119,9 @@ fn extras(win64: &Path, log: &mut Vec<String>) {
     let extra = bundle_dir().with_file_name("extra");
     let Some(gameface) = win64.parent().and_then(|p| p.parent()) else { return };
     let mods = gameface.join(r"Content\Paks\~mods");
-    if extra.join("coop_P.pak").is_file() && std::fs::create_dir_all(&mods).is_ok() && std::fs::copy(extra.join("coop_P.pak"), mods.join("coop_P.pak")).is_ok() {
-        log.push("„co-op“ įrašas meniu įdiegtas.".into());
+    match build_menu_pak(&extra, gameface, &mods) {
+        Ok(()) => log.push("„co-op“ įrašas meniu įdiegtas.".into()),
+        Err(e) => log.push(format!("„co-op“ meniu įrašo nepavyko sukurti: {e}")),
     }
     if let Some(docs) = std::env::var_os("USERPROFILE").map(|u| PathBuf::from(u).join(r"Documents\Rockstar Games\GTA San Andreas Definitive Edition\Config\WindowsNoEditor")) {
         let ini = docs.join("Engine.ini");
