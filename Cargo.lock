@@ -273,7 +273,9 @@ dependencies = [
 name = "coopnet"
 version = "0.1.0"
 dependencies = [
+ "clipboard-win",
  "proto",
+ "relay",
 ]
 
 [[package]]
@@ -1748,6 +1750,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "relay"
+version = "0.1.0"
+dependencies = [
+ "igd-next",
+ "proto",
+]
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1793,8 +1803,8 @@ name = "sa-coop"
 version = "0.1.0"
 dependencies = [
  "eframe",
- "igd-next",
  "proto",
+ "relay",
 ]
 
 [[package]]

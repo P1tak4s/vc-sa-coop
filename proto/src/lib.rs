@@ -11,8 +11,11 @@ pub const WELCOME: u8 = 2; // server -> client: slot u8
 pub const DENY: u8 = 3; // server -> client: reason u8 (1 bad key, 2 full)
 pub const STATE: u8 = 4; // client -> server: State; server -> clients: slot u8 + State
 pub const LEAVE: u8 = 5; // client -> server: (empty); server -> clients: slot u8
+pub const REVIVE: u8 = 6; // client -> server: target slot u8; server -> clients: from slot u8, target slot u8
 
-/// One player's state as the game script sees it. `repr(C)`: the JS script reads and writes it by byte offset.
+/// One player's state as the game script sees it.
+/// `in_car`: 0 on foot, 1 driving `car_model`, 2 passenger: `car_model` = the driver's slot, `car_health` = seat.
+/// `health` < 0: down, waiting to be revived. `repr(C)`: the JS script reads and writes it by byte offset.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct State {
@@ -65,7 +68,12 @@ impl State {
         // a peer could send anything: refuse what would hurt the game (NaN positions, bogus models)
         let finite = [s.x, s.y, s.z, s.heading, s.vx, s.vy, s.vz, s.qx, s.qy, s.qz, s.qw, s.car_speed].iter().all(|v| v.is_finite());
         let in_world = s.x.abs() < 6000.0 && s.y.abs() < 6000.0 && s.z > -200.0 && s.z < 2000.0;
-        let model_ok = s.in_car == 0 || (400..=611).contains(&s.car_model);
+        let model_ok = match s.in_car {
+            0 => true,
+            1 => (400..=611).contains(&s.car_model),
+            2 => (0..MAX_PLAYERS as i32).contains(&s.car_model) && (0..=2).contains(&s.car_health),
+            _ => false,
+        };
         (finite && in_world && model_ok).then_some(s)
     }
 }
@@ -140,5 +148,9 @@ mod tests {
         assert_eq!(State::from_bytes(&bad.to_bytes()), None);
         let bad_model = State { car_model: 9999, ..s };
         assert_eq!(State::from_bytes(&bad_model.to_bytes()), None);
+        let passenger = State { in_car: 2, car_model: 0, car_health: 0, ..s };
+        assert_eq!(State::from_bytes(&passenger.to_bytes()), Some(passenger));
+        let bad_seat = State { in_car: 2, car_model: 7, ..s };
+        assert_eq!(State::from_bytes(&bad_seat.to_bytes()), None);
     }
 }

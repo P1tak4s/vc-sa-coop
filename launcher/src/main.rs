@@ -4,10 +4,11 @@
 
 use eframe::egui;
 use proto::*;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use relay::{lan_ip, random_key, run_server, upnp, Players};
+use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 const STEAM_APP: &str = "steam://rungameid/1547000";
 const GAME_SUBDIR: &str = r"steamapps\common\GTA San Andreas - The Definitive Edition\Gameface\Binaries\Win64";
@@ -73,7 +74,7 @@ fn install(game: &Path) -> Result<Vec<String>, String> {
 }
 
 fn installed(game: &Path) -> bool {
-    ["version.dll", "cleo_redux64.asi", "coopnet64.dll", r"CLEO\sa-coop.js"].iter().all(|f| game.join(f).is_file())
+    ["version.dll", "cleo_redux64.asi", "coopnet64.dll", r"CLEO\sa-coop[dll][mem].js"].iter().all(|f| game.join(f).is_file())
 }
 
 // ---- session file the game's DLL reads --------------------------------------------------------------------
@@ -87,108 +88,6 @@ fn write_session(server: SocketAddr, key: u32, nick: &str) -> std::io::Result<()
 fn start_game() {
     use std::os::windows::process::CommandExt;
     let _ = std::process::Command::new("cmd").args(["/C", "start", "", STEAM_APP]).creation_flags(0x0800_0000).spawn();
-}
-
-fn random_key() -> u32 {
-    use std::hash::{BuildHasher, Hasher};
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(Instant::now().elapsed().as_nanos() ^ std::process::id() as u128);
-    (h.finish() as u32) | 1
-}
-
-fn lan_ip() -> Option<Ipv4Addr> {
-    let s = UdpSocket::bind("0.0.0.0:0").ok()?;
-    s.connect("1.1.1.1:80").ok()?; // no packet is sent: this only picks the outgoing interface
-    match s.local_addr().ok()?.ip() {
-        IpAddr::V4(v) => Some(v),
-        _ => None,
-    }
-}
-
-// ---- server ---------------------------------------------------------------------------------------------
-
-struct Peer {
-    addr: SocketAddr,
-    nick: String,
-    seen: Instant,
-}
-
-type Players = Arc<Mutex<Vec<String>>>;
-
-fn run_server(sock: UdpSocket, key: u32, players: Players) {
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(200)));
-    let mut peers: [Option<Peer>; MAX_PLAYERS] = Default::default();
-    let mut buf = [0u8; 512];
-    loop {
-        // drop the silent: a crashed game must not hold a seat
-        for slot in 0..MAX_PLAYERS {
-            if peers[slot].as_ref().is_some_and(|p| p.seen.elapsed() > Duration::from_secs(10)) {
-                peers[slot] = None;
-                broadcast(&sock, &peers, None, &packet(LEAVE, &[slot as u8]));
-            }
-        }
-        *players.lock().unwrap() = peers.iter().flatten().map(|p| p.nick.clone()).collect();
-
-        let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
-        let Some((kind, body)) = parse(&buf[..n]) else { continue };
-        let known = peers.iter().position(|p| p.as_ref().is_some_and(|p| p.addr == from));
-        match (kind, known) {
-            (JOIN, _) if body.len() >= 4 + NICK_LEN => {
-                if u32::from_le_bytes(body[..4].try_into().unwrap()) != key {
-                    let _ = sock.send_to(&packet(DENY, &[1]), from);
-                    continue;
-                }
-                let nick = String::from_utf8_lossy(&body[4..4 + NICK_LEN]).trim_end_matches('\0').to_string();
-                let slot = known.or_else(|| peers.iter().position(|p| p.is_none()));
-                match slot {
-                    Some(s) => {
-                        peers[s] = Some(Peer { addr: from, nick, seen: Instant::now() });
-                        let _ = sock.send_to(&packet(WELCOME, &[s as u8]), from);
-                    }
-                    None => {
-                        let _ = sock.send_to(&packet(DENY, &[2]), from);
-                    }
-                }
-            }
-            (STATE, Some(s)) if body.len() == STATE_SIZE => {
-                if let Some(p) = peers[s].as_mut() {
-                    p.seen = Instant::now();
-                }
-                if State::from_bytes(body).is_some() {
-                    let mut out = vec![s as u8];
-                    out.extend_from_slice(body);
-                    broadcast(&sock, &peers, Some(s), &packet(STATE, &out));
-                }
-            }
-            (LEAVE, Some(s)) => {
-                peers[s] = None;
-                broadcast(&sock, &peers, None, &packet(LEAVE, &[s as u8]));
-            }
-            _ => {}
-        }
-    }
-}
-
-fn broadcast(sock: &UdpSocket, peers: &[Option<Peer>; MAX_PLAYERS], except: Option<usize>, p: &[u8]) {
-    for (i, peer) in peers.iter().enumerate() {
-        if let Some(peer) = peer {
-            if Some(i) != except {
-                let _ = sock.send_to(p, peer.addr);
-            }
-        }
-    }
-}
-
-/// Ask the router (UPnP) to forward the port and tell us the outside address. None: no UPnP, the host forwards
-/// the port by hand and the LAN code still works.
-fn upnp(port: u16) -> Option<Ipv4Addr> {
-    let gw = igd_next::search_gateway(Default::default()).ok()?;
-    let local = SocketAddr::new(IpAddr::V4(lan_ip()?), port);
-    gw.add_port(igd_next::PortMappingProtocol::UDP, port, local, 6 * 3600, "SA Co-op").ok()?;
-    match gw.get_external_ip().ok()? {
-        IpAddr::V4(v) => Some(v),
-        _ => None,
-    }
 }
 
 // ---- UI -------------------------------------------------------------------------------------------------

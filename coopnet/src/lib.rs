@@ -16,6 +16,9 @@ struct Shared {
     mine: Option<State>,
     peers: [Option<(State, Instant)>; MAX_PLAYERS],
     stop: bool,
+    code: Option<String>,       // host: the code to give friends (internet one once UPnP answers)
+    revive_out: Option<u8>,     // a revive to send to that slot
+    revived: bool,              // someone revived us; the script takes it once
 }
 
 fn shared() -> &'static Mutex<Shared> {
@@ -32,7 +35,8 @@ struct Session {
 /// `%LOCALAPPDATA%\sa-de-coop\session.txt`, written by the launcher: `server=`, `key=` (hex), `nick=`.
 fn read_session() -> Option<Session> {
     let path = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("sa-de-coop").join("session.txt");
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::rename(&path, path.with_extension("used"));
     let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()));
     Some(Session {
         server: get("server=")?.to_socket_addrs().ok()?.next()?,
@@ -56,10 +60,13 @@ fn net_thread(sess: Session) {
     let mut buf = [0u8; 512];
 
     loop {
-        let (status, mine, stop) = {
-            let s = shared().lock().unwrap();
-            (s.status, s.mine, s.stop)
+        let (status, mine, stop, revive) = {
+            let mut s = shared().lock().unwrap();
+            (s.status, s.mine, s.stop, s.revive_out.take())
         };
+        if let (2, Some(target)) = (status, revive) {
+            let _ = sock.send_to(&packet(REVIVE, &[target]), sess.server);
+        }
         if stop {
             let _ = sock.send_to(&packet(LEAVE, &[]), sess.server);
             return;
@@ -96,28 +103,102 @@ fn net_thread(sess: Session) {
                     }
                 }
             }
+            REVIVE if body.len() == 2 && body[1] as i32 == s.slot => s.revived = true,
             LEAVE if !body.is_empty() && (body[0] as usize) < MAX_PLAYERS => s.peers[body[0] as usize] = None,
             _ => {}
         }
     }
 }
 
-/// Reads the session the launcher wrote and starts joining. 1 = started (or already running), 0 = no session.
-#[no_mangle]
-pub extern "C" fn coop_start() -> i64 {
+fn start_client(sess: Session) -> i64 {
     let mut s = shared().lock().unwrap();
-    if s.status != 0 {
+    if matches!(s.status, 1 | 2) {
         return 1;
     }
-    let Some(sess) = read_session() else {
-        s.status = 4;
-        return 0;
-    };
     s.status = 1;
     s.stop = false;
     drop(s);
     std::thread::spawn(move || net_thread(sess));
     1
+}
+
+fn my_nick() -> String {
+    let n: String = std::env::var("USERNAME").unwrap_or_default().chars().filter(|c| c.is_ascii_alphanumeric()).take(NICK_LEN).collect();
+    if n.is_empty() { "Player".into() } else { n }
+}
+
+/// Joins the session the launcher wrote, if there is one. 1 = joining (or already in), 0 = no session.
+#[no_mangle]
+pub extern "C" fn coop_start() -> i64 {
+    if matches!(shared().lock().unwrap().status, 1 | 2) {
+        return 1;
+    }
+    match read_session() {
+        Some(sess) => start_client(sess),
+        None => 0,
+    }
+}
+
+/// F9: run the server inside the game, join it, and make a code (copied to the clipboard). 1 = hosting.
+#[no_mangle]
+pub extern "C" fn coop_host() -> i64 {
+    if matches!(shared().lock().unwrap().status, 1 | 2) {
+        return 1;
+    }
+    let Ok(sock) = UdpSocket::bind(("0.0.0.0", DEFAULT_PORT)) else { return 0 };
+    let key = relay::random_key();
+    std::thread::spawn(move || relay::run_server(sock, key, Default::default()));
+    if let Some(ip) = relay::lan_ip() {
+        set_code(make_code(ip.octets(), DEFAULT_PORT, key));
+    }
+    // UPnP can take seconds: the LAN code is there at once, the internet one replaces it when the router answers
+    std::thread::spawn(move || {
+        if let Some(ip) = relay::upnp(DEFAULT_PORT) {
+            set_code(make_code(ip.octets(), DEFAULT_PORT, key));
+        }
+    });
+    start_client(Session { server: SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)), key, nick: my_nick() })
+}
+
+fn set_code(code: String) {
+    let _ = clipboard_win::set_clipboard_string(&code);
+    shared().lock().unwrap().code = Some(code);
+}
+
+/// The host's current code as ASCII into `out` (up to `max` bytes). Returns its length, 0 = none yet.
+#[no_mangle]
+pub unsafe extern "C" fn coop_code(out: *mut u8, max: i64) -> i64 {
+    let s = shared().lock().unwrap();
+    let Some(code) = &s.code else { return 0 };
+    if out.is_null() || (max as usize) < code.len() {
+        return 0;
+    }
+    std::ptr::copy_nonoverlapping(code.as_ptr(), out, code.len());
+    code.len() as i64
+}
+
+/// F10: join with the code on the clipboard. 1 = joining, 0 = no valid code there.
+#[no_mangle]
+pub extern "C" fn coop_join_clipboard() -> i64 {
+    let Ok(text) = clipboard_win::get_clipboard_string() else { return 0 };
+    let Some((ip, port, key)) = parse_code(text.trim()) else { return 0 };
+    start_client(Session { server: SocketAddr::from((ip, port)), key, nick: my_nick() })
+}
+
+/// Revive the player in `slot` (the script checked they are down and we stand next to them).
+#[no_mangle]
+pub extern "C" fn coop_revive(slot: i64) -> i64 {
+    if !(0..MAX_PLAYERS as i64).contains(&slot) {
+        return 0;
+    }
+    shared().lock().unwrap().revive_out = Some(slot as u8);
+    1
+}
+
+/// 1 once after a friend revived us.
+#[no_mangle]
+pub extern "C" fn coop_take_revived() -> i64 {
+    std::mem::take(&mut shared().lock().unwrap().revived) as i64
 }
 
 #[no_mangle]
