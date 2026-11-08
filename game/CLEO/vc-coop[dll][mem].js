@@ -226,7 +226,11 @@ function remoteWithCar(car) {
 function writeMine(me) {
   const p = me.getCoordinates();
   let v = { x: 0, y: 0, z: 0 }, q = { x: 0, y: 0, z: 0, w: 1 }, carSpeed = 0, inCar = 0, carModel = 0, carHealth = 0;
-  if (me.isInAnyCar()) {
+  if (riding && carExists(riding.car)) {
+    const c = riding.car.getCoordinates();
+    p.x = c.x; p.y = c.y; p.z = c.z;
+    inCar = 2; carModel = riding.slot; carHealth = 2;
+  } else if (me.isInAnyCar()) {
     const car = me.storeCarIsInNoSave();
     const c = car.getCoordinates();
     p.x = c.x; p.y = c.y; p.z = c.z;
@@ -331,6 +335,7 @@ function spawnPed(slot, s) {
 }
 
 function leaveCar(r, s) {
+  if (r.attached) { detachExtra(r.ped); r.attached = 0; r.ped.setCoordinates(s.x, s.y, s.z); placeAt(pedPtr(r.ped), s.x, s.y, s.z); }
   try { if (r.ped.isInAnyCar()) r.ped.warpFromCarToCoord(s.x, s.y, s.z); } catch (e) {}
 }
 
@@ -429,14 +434,39 @@ function rideRemote(r, s, mySlot, me) {
   } else if (remotes[driverSlot] && remotes[driverSlot].car) {
     car = remotes[driverSlot].car; // they sit in another friend's car
   }
-  if (!car) { r.ped.setCoordinates(s.x, s.y, s.z); placeAt(pedPtr(r.ped), s.x, s.y, s.z); return; }
-  if (!r.ped.isInAnyCar() && now() - (r.lastWarp || 0) > 1000) {
-    r.lastWarp = now();
-    if (!api.coop_warp_passenger(+r.ped, +car)) log("[vc-coop] passenger: no free seat");
+  if (!car) {
+    if (r.attached) { detachExtra(r.ped); r.attached = 0; }
+    r.ped.setCoordinates(s.x, s.y, s.z); placeAt(pedPtr(r.ped), s.x, s.y, s.z); return;
+  }
+  if (r.attached && r.attached !== +car) { detachExtra(r.ped); r.attached = 0; }
+  if (r.attached || r.ped.isInAnyCar() || now() - (r.lastWarp || 0) < 1000) return;
+  r.lastWarp = now();
+  // they said "extra seat" (2), or the car has no free seat here: on the trunk / the back of the bike
+  if (s.carHealth === 2 || !api.coop_warp_passenger(+r.ped, +car)) {
+    try { attachExtra(r.ped, car, s.weapon); r.attached = +car; } catch (e) { noteError(`extra seat: ${e}`); }
   }
 }
 
 function now() { return Date.now(); }
+
+// ---- an extra seat: the trunk of a full car, or the back of a bike that already carries two -------------------
+// ATTACH_CHAR_TO_CAR keeps the ped on the car at an offset and lets it shoot within an arc (like VC's own missions).
+const BIKES = [166, 178, 191, 192, 193, 198]; // angel, pizzaboy, pcj600, faggio, freeway, sanchez
+let riding = null; // { car, slot }: we sit on a friend's car outside its seats
+
+function attachExtra(ped, car, weapon) {
+  let model = 0;
+  try { model = car.getModel(); } catch (e) {}
+  const bike = BIKES.includes(model);
+  // bike: behind the passenger, facing forward; car: on the trunk lid, facing back (shoot at whoever follows)
+  if (bike) ped.attachToCar(car, 0, -0.95, 0.55, 0, 90, weapon || 0);
+  else ped.attachToCar(car, 0, -1.9, 0.75, 2, 150, weapon || 0);
+  return bike ? "ant motociklo galo" : "ant bagazines";
+}
+
+function detachExtra(ped) {
+  try { ped.detachFromCar(); } catch (e) {}
+}
 
 function walkRemote(r, s, t) {
   if (r.car) dropCar(r);
@@ -571,13 +601,30 @@ function syncRemotes(me, mySlot, t) {
 function tryRideAlong(me) {
   if (me.isInAnyCar() || downed) return;
   const p = me.getCoordinates();
-  let best = null, bestD = 7 * 7;
-  for (const r of remotes) {
-    if (!r || !r.car || !carExists(r.car)) continue;
+  let best = null, bestD = 7 * 7, bestSlot = -1;
+  remotes.forEach((r, slot) => {
+    if (!r || !r.car || !carExists(r.car)) return;
     const d = dist2(p, r.car.getCoordinates());
-    if (d < bestD) { best = r; bestD = d; }
-  }
-  if (best && !api.coop_warp_passenger(+me, +best.car)) say("VC Co-op: draugo masinoje nera laisvos vietos");
+    if (d < bestD) { best = r; bestD = d; bestSlot = slot; }
+  });
+  if (!best || api.coop_warp_passenger(+me, +best.car)) return;
+  // no free seat (a two-seater on a mission, a bike that carries two): ride outside the seats
+  try {
+    let weapon = 0;
+    try { weapon = me.getCurrentWeapon(); } catch (e) {}
+    const where = attachExtra(me, best.car, weapon);
+    riding = { car: best.car, slot: bestSlot };
+    say(`VC Co-op: vietu nera, vaziuoji ${where}. F - nulipti`);
+  } catch (e) { noteError(`extra seat G: ${e}`); }
+}
+
+function stopRiding(me) {
+  if (!riding) return;
+  let c = null;
+  try { if (carExists(riding.car)) c = riding.car.getCoordinates(); } catch (e) {}
+  detachExtra(me);
+  if (c) { me.setCoordinates(c.x + 2.5, c.y, c.z); }
+  riding = null;
 }
 
 // ---- shared world: weather, missions ---------------------------------------------------------------------
@@ -876,6 +923,7 @@ function report(me, t) {
         const at = r.ped.isInAnyCar() ? r.ped.storeCarIsInNoSave().getCoordinates() : r.ped.getCoordinates();
         e = Math.sqrt(dist2(at, s));
         if (r.ped.isInAnyCar()) c = r.car && carExists(r.car) ? String(r.carModel) : "pas";
+        else if (r.attached) c = "ext";
       }
     } catch (err) { noteError(`report ${slot}: ${err}`); }
     sendEvent(EV.REPORT, `F${slot} p=${p} e=${e.toFixed(1)} c=${c} ar=${r.area} dn=${r.down ? 1 : 0} w=${r.weapon || 0} nm=${t - (r.drawnAt || 0) < 1000 ? 1 : 0}`);
@@ -923,7 +971,9 @@ while (true) {
   hearWorld();
   missionsTick(t);
   report(me, t);
-  if (pressed(KEY.G)) tryRideAlong(me);
+  if (riding && (!carExists(riding.car) || downed)) stopRiding(me);
+  if (pressed(KEY.G) && !riding) tryRideAlong(me);
+  if (riding && pressed(KEY.F)) { stopRiding(me); continue; }
   // F in a friend's car: straight out beside it (the car is moved every frame, which breaks the exit animation)
   if (pressed(KEY.F) && me.isInAnyCar()) {
     try {

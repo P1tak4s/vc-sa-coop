@@ -33,6 +33,7 @@ PHASES = [  # name, seconds, what to do (shown on screen through the log)
     ("masina", 25, "vairuoja Infernus ratu 15 m"),
     ("stovi", 30, "stovi masinoje 4 m i rytus: prieik ir spausk G"),
     ("keleivis", 30, "sesk i masina ir vaziuok: robotas sedes salia"),
+    ("bagazine", 30, "vaziuok masina: robotas vaziuos ant bagazines (papildoma vieta)"),
     ("suzeistas", 35, "guli suzeistas 3 m i rytus: prieik ir laikyk E"),
     ("interjeras", 12, "persikelia i kita interjera (turi dingti)"),
 ]
@@ -311,6 +312,14 @@ def run_phase(name, seconds, what):
             else:
                 x, y = cx + 2, cy
                 send_state(x, y, cz, 270)
+        elif name == "bagazine":
+            if me["in_car"] == 1:
+                x, y = me["x"], me["y"]
+                send_state(x, y, me["z"], me["heading"], in_car=2, car_model=host_slot, car_health=2)
+                i_rode = True
+            else:
+                x, y = cx + 2, cy
+                send_state(x, y, cz, 270)
         elif name == "suzeistas":
             x, y = cx + 3, cy
             if revived_by_you:
@@ -341,7 +350,7 @@ def run_phase(name, seconds, what):
         worst = max(errs) if errs else -1
         names = sum(r[2].get("nm") == "1" for r in seen) / len(seen)
         notes.append(f"kopija yra {present:.0%} laiko, paklaida vid. {avg:.1f} m, blogiausia {worst:.1f} m, vardas matomas {names:.0%}")
-        limit = {"eina": 1.5, "bega": 3, "suolis": 31, "masina": 4, "stovi": 2, "keleivis": 5, "suzeistas": 2, "interjeras": 2}[name]
+        limit = {"bagazine": 5, "eina": 1.5, "bega": 3, "suolis": 31, "masina": 4, "stovi": 2, "keleivis": 5, "suzeistas": 2, "interjeras": 2}[name]
         ok = present > 0.8 and avg >= 0 and avg <= limit
         if name == "eina":
             w = [r[2].get("w") for r in seen]; notes.append(f"ginklas kopijoje: {w[-1] if w else '?'} (turi buti 17)")
@@ -362,6 +371,12 @@ def run_phase(name, seconds, what):
                 ok = None; notes.append("tu nevaziavai: nepatikrinta")
             else:
                 notes.append(f"kopija sedi tavo masinoje {len(pas)} raportuose"); ok = len(pas) > 0
+        if name == "bagazine":
+            ext = [r[2].get("c") for r in seen if r[2].get("c") == "ext"]
+            if not i_rode:
+                ok = None; notes.append("tu nevaziavai: nepatikrinta")
+            else:
+                notes.append(f"kopija ant bagazines {len(ext)} raportuose"); ok = len(ext) > 0
         if name == "suzeistas":
             dn = [r[2].get("dn") for r in seen]; notes.append(f"kopija guli: {'taip' if '1' in dn else 'ne'}; atgaivinai: {'taip' if revived_by_you else 'ne'}")
             ok = "1" in dn
