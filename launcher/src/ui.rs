@@ -399,7 +399,7 @@ impl App {
                     });
                 }
                 if is_vc(g) {
-                    ui.checkbox(&mut self.handling, "Better car handling (more grip, ABS)");
+                    ui.checkbox(&mut self.handling, "Better car handling (faster, more grip, ABS)");
                 }
                 if reshade_on(&dir).is_none() {
                     ui.label(RichText::new("ReShade: the game already has another mod's dxgi.dll.").color(MUTED));

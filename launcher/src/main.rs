@@ -385,10 +385,11 @@ fn retune_line(line: &str) -> Option<String> {
     }
     let num = |s: &str| s.parse::<f32>().ok();
     // 11-08 v1 (grip x1.2, firmer springs, lower centre of mass) felt heavy: now lighter and quicker, a little more grip
-    let (traction, loss, accel, brake, lock) = (num(&f[9])?, num(&f[10])?, num(&f[14])?, num(&f[17])?, num(&f[20])?);
+    let (traction, loss, top, accel, brake, lock) = (num(&f[9])?, num(&f[10])?, num(&f[13])?, num(&f[14])?, num(&f[17])?, num(&f[20])?);
     let mut set = |i: usize, v: f32| f[i] = format!("{v:.3}");
     set(9, (traction * 1.08).min(2.0));
     set(10, (loss * 1.05).min(1.0));
+    set(13, top * 1.2); // top speed
     set(14, accel * 1.25); // no cap: VC values go far above the documented 10 (Infernus 30); a cap made cars slow
     set(17, brake * 1.2);
     set(20, (lock * 1.1).min(40.0));
@@ -597,6 +598,7 @@ mod tests {
         assert_eq!(f[19], "1");
         assert_eq!(f[7], "-0.25");
         assert_eq!(f[14], "37.500");
+        assert_eq!(f[13], "288.000");
         let bike = "PCJ600          200.0  0.8 2.1 1.1 0.0 0.05 -0.1 103 1.4  0.85 0.48 5 190.0 35.0 R P 15.0  0.50 0 30.0  1.2  0.15 0.0  0.10 10000 0.20 -0.10 0.55 0.0		10000		1  1";
         assert!(retune_line(bike).is_none());
         assert!(retune_line("; comment").is_none());
