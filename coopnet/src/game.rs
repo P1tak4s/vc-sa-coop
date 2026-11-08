@@ -29,15 +29,25 @@ pub struct Game {
     pub pause_button: &'static str,
     pub pause_coop: i32,
     // ---- script engine: story hooks ----
+    /// SA: a table of group handlers (one per 100 opcodes) that we overwrite
     pub opcode_table: usize,
     pub opcode_groups: usize,
     /// first bytes of the first group handler, checked before the table is wrapped
     pub opcode_check: &'static [u8],
+    /// VC: no table; the group handlers (one per 100 opcodes) are hooked one by one, with their first bytes checked
+    pub opcode_handlers: &'static [(usize, [u8; 5])],
+    /// VC: CAN_PLAYER_START_MISSION, answered "no" for the guest (and for the host until the partner is near)
+    /// by calling CRunningScript::UpdateCompareFlag(script, false) after restoring the condition state
+    pub start_mission_op: u32,
+    pub update_compare_flag: usize,
+    pub update_compare_check: &'static [u8],
     pub can_start_mission: usize,
     pub script_space: usize,
     /// $PLAYER_ACTOR offset inside ScriptSpace
     pub player_actor: usize,
     pub s_ip: usize,
+    /// IP is a pointer (SA, 8 bytes) or an offset into ScriptSpace (VC, 4 bytes)
+    pub s_ip_wide: bool,
     pub s_cond: usize,
     pub s_logic: usize,
     pub s_not: usize,
@@ -60,10 +70,15 @@ pub const SA: Game = Game {
     opcode_table: 0x4307D00,
     opcode_groups: 27,
     opcode_check: &[],
+    opcode_handlers: &[],
+    start_mission_op: 0,
+    update_compare_flag: 0,
+    update_compare_check: &[],
     can_start_mission: 0x124E750,
     script_space: 0x51BEAE0,
     player_actor: 12,
     s_ip: 0x20,
+    s_ip_wide: true,
     s_cond: 0x115,
     s_logic: 0x120,
     s_not: 0x122,
@@ -86,17 +101,40 @@ pub const VC: Game = Game {
     main_coop: 4,
     pause_button: "UI_Button_Menu_VC_C",
     pause_coop: 7,
+    // CRunningScript::ProcessOneCommand (0x104AAD0) jumps to 15 group handlers, int8 h(CRunningScript*, op)
     opcode_table: 0,
-    opcode_groups: 0,
+    opcode_groups: 15,
     opcode_check: &[],
+    opcode_handlers: &[
+        (0x104AC60, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x104C160, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x104E280, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x1050410, [0x48, 0x89, 0x5C, 0x24, 0x10]),
+        (0x1052570, [0x48, 0x8B, 0xC4, 0x55, 0x53]),
+        (0x1054C30, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x1056E60, [0x40, 0x53, 0x57, 0x41, 0x54]),
+        (0x1057830, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x1059BC0, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x105C940, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x1067A50, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x1069380, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x106BF30, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x106E9E0, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+        (0x1071080, [0x48, 0x8B, 0xC4, 0x48, 0x89]),
+    ],
+    start_mission_op: 0x3EE,
+    update_compare_flag: 0x1060130,
+    update_compare_check: &[0x80, 0xB9, 0x8A, 0x00, 0x00, 0x00, 0x00],
     can_start_mission: 0,
-    script_space: 0,
-    player_actor: 0,
-    s_ip: 0,
-    s_cond: 0,
-    s_logic: 0,
-    s_not: 0,
-    s_mission: 0,
+    script_space: 0x5047AE0,
+    player_actor: 0x4C0, // $PLAYER_ACTOR in VC DE's main.scm
+    // CRunningScript: next +0, name +0x10, IP +0x18 (u32), condResult +0x81, isMission +0x82, AND/OR +0x88, NOT +0x8A
+    s_ip: 0x18,
+    s_ip_wide: false,
+    s_cond: 0x81,
+    s_logic: 0x88,
+    s_not: 0x8A,
+    s_mission: 0x82,
 };
 
 /// The game this process is, from the exe name; None in tools (tools/dll_test.py loads the DLL too).

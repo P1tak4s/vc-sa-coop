@@ -9,6 +9,7 @@ mod overlay;
 mod saves;
 mod scripthook;
 mod steam;
+mod vcmem;
 
 use proto::*;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};

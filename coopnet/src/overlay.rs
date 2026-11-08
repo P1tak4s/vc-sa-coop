@@ -12,6 +12,15 @@ pub static SKIN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(
 /// The last message about save sets, shown in the status row.
 pub static SAVE_NOTE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 pub const SKIN_NAMES: [&str; 8] = ["Grove Street narys", "Sweet", "Ryder", "Big Smoke", "Cesar", "Kendl", "Woozie", "The Truth"];
+/// Vice City: same order as STORY_LOOKS in vc-coop.js (special characters igken, igsonny, ...)
+pub const SKIN_NAMES_VC: [&str; 8] = ["Vice City vaikinas", "Ken Rosenberg", "Sonny Forelli", "Ricardo Diaz", "Mercedes", "Candy Suxxx", "Hilary King", "Gonzalez"];
+
+fn skin_names() -> &'static [&'static str; 8] {
+    match crate::game::current().kind {
+        crate::game::Kind::Sa => &SKIN_NAMES,
+        crate::game::Kind::Vc => &SKIN_NAMES_VC,
+    }
+}
 
 pub fn toggle() {
     let was = OPEN.fetch_xor(true, Ordering::SeqCst);
@@ -174,11 +183,12 @@ impl ImguiRenderLoop for CoopMenu {
                 ui.input_text("##pw", pw).password(true).build();
                 y += ROW_H;
 
-                let skin = SKIN.load(Ordering::SeqCst) as usize % SKIN_NAMES.len();
+                let names = skin_names();
+                let skin = SKIN.load(Ordering::SeqCst) as usize % names.len();
                 if row_bg(y, 2, "Išvaizda") {
-                    SKIN.store(((skin + 1) % SKIN_NAMES.len()) as u8, Ordering::SeqCst);
+                    SKIN.store(((skin + 1) % names.len()) as u8, Ordering::SeqCst);
                 }
-                let label = format!("<  {}  >", SKIN_NAMES[skin]);
+                let label = format!("<  {}  >", names[skin]);
                 let ts = ui.calc_text_size(&label);
                 dl.add_text([origin[0] + w - ts[0] - 30.0, y + (ROW_H - ts[1]) / 2.0], [1.0, 1.0, 1.0, 1.0], &label);
                 y += ROW_H;
@@ -215,7 +225,8 @@ impl ImguiRenderLoop for CoopMenu {
                 }
                 y += ROW_H;
 
-                if !join_tab {
+                // the AI partner is a San Andreas script (ai-partneris.js) only
+                if !join_tab && crate::game::current().kind == crate::game::Kind::Sa {
                     let on = crate::ai::ENABLED.load(Ordering::SeqCst);
                     if row_bg(y, 6, "AI partneris (Jev)") {
                         crate::ai::ENABLED.store(!on, Ordering::SeqCst);
