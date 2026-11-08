@@ -7,9 +7,15 @@ MODE = sys.argv[1] if len(sys.argv) > 1 else ""
 DRIVE = MODE == "masina"
 down = MODE == "suzeistas"; you_down_since = None
 
-sess = dict(l.split("=", 1) for l in open(os.path.join(os.environ["LOCALAPPDATA"], "sa-de-coop", "session.txt")).read().split())
-host, port = sess["server"].rsplit(":", 1)
-srv = (host, int(port)); key = int(sess["key"], 16)
+CODE = os.environ.get("KODAS", "")
+if CODE:  # in-game host (F9): the code from the screen; the bot runs on the host's PC, so 127.0.0.1
+    A = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; v = 0
+    for c in CODE.replace("-", "").upper(): v = v << 5 | A.index(c)
+    srv = ("127.0.0.1", (v >> 32) & 0xFFFF); key = v & 0xFFFFFFFF
+else:
+    sess = dict(l.split("=", 1) for l in open(os.path.join(os.environ["LOCALAPPDATA"], "sa-de-coop", "session.used")).read().split())
+    host, port = sess["server"].rsplit(":", 1)
+    srv = (host, int(port)); key = int(sess["key"], 16)
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(0.05)
 MAGIC = b"SDC1"
 s.sendto(MAGIC + bytes([1]) + struct.pack("<I", key) + b"Botas".ljust(16, b"\0"), srv)

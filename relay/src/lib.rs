@@ -61,6 +61,15 @@ pub fn run_server(sock: UdpSocket, key: u32, players: Players) {
                     Some(s) => {
                         peers[s] = Some(Peer { addr: from, nick, seen: Instant::now() });
                         let _ = sock.send_to(&packet(WELCOME, &[s as u8]), from);
+                        // everyone learns everyone's name (the game draws it over their head)
+                        let mut names = vec![peers.iter().flatten().count() as u8];
+                        for (i, p) in peers.iter().enumerate() {
+                            if let Some(p) = p {
+                                names.push(i as u8);
+                                names.extend_from_slice(&nick_bytes(&p.nick));
+                            }
+                        }
+                        broadcast(&sock, &peers, None, &packet(NAMES, &names));
                     }
                     None => {
                         let _ = sock.send_to(&packet(DENY, &[2]), from);

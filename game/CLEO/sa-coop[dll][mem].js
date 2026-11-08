@@ -15,7 +15,7 @@ if (!lib) { log("[sa-coop] coopnet64.dll not found"); exit("coopnet64.dll not fo
 const api = {};
 try {
   for (const name of ["coop_start", "coop_host", "coop_join_clipboard", "coop_code", "coop_status", "coop_slot",
-                      "coop_send", "coop_get", "coop_revive", "coop_take_revived"]) {
+                      "coop_send", "coop_get", "coop_revive", "coop_take_revived", "coop_name"]) {
     api[name] = Memory.Fn.X64(lib.getProcedure(name));
   }
 } catch (e) {
@@ -30,6 +30,7 @@ const I = { inCar: 48, carModel: 52, health: 56, carHealth: 60 };
 const mine = Memory.Allocate(SIZE);
 const theirs = Memory.Allocate(SIZE);
 const codeBuf = Memory.Allocate(32);
+const nameBuf = Memory.Allocate(32);
 
 const KEY = { F9: 120, F10: 121, G: 71, E: 69 };
 const SKINS = [105, 106, 107, 105]; // Grove Street looks until we sync clothes
@@ -54,11 +55,61 @@ function pressed(code) { // true once per press
 
 function dist2(a, b) { const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z; return dx * dx + dy * dy + dz * dz; }
 
-function readCode() {
-  const n = api.coop_code(codeBuf, 32);
+function readAscii(buf, n) {
   let s = "";
-  for (let i = 0; i < n; i++) s += String.fromCharCode(Memory.ReadU8(codeBuf + i, false, false));
+  for (let i = 0; i < n; i++) s += String.fromCharCode(Memory.ReadU8(buf + i, false, false));
   return s;
+}
+function readCode() { return readAscii(codeBuf, api.coop_code(codeBuf, 32)); }
+
+// ---- names over heads -----------------------------------------------------------------------------------
+// The game draws text by key: each friend's name is stored under its own key, refreshed when it changes.
+function nameKey(slot, r) {
+  const name = readAscii(nameBuf, api.coop_name(slot, nameBuf, 16)) || `Player${slot + 1}`;
+  if (name !== r.name) {
+    r.name = name;
+    try { FxtStore.insert(`COOPN${slot}`, name); } catch (e) { log(`[sa-coop] name key: ${e}`); }
+  }
+  return `COOPN${slot}`;
+}
+
+// world point -> the 640 x 448 screen the game's text uses; null when behind the camera or far away
+function toScreen(p) {
+  const cam = Camera.GetActiveCoordinates(), at = Camera.GetActivePointAt();
+  let fx = at.x - cam.x, fy = at.y - cam.y, fz = at.z - cam.z;
+  const fl = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+  let rx = fy, ry = -fx; const rl = Math.sqrt(rx * rx + ry * ry) || 1; rx /= rl; ry /= rl; // right = forward x up
+  const ux = ry * fz, uy = -rx * fz, uz = rx * fy - ry * fx;                                 // up = right x forward
+  const dx = p.x - cam.x, dy = p.y - cam.y, dz = p.z - cam.z;
+  const depth = dx * fx + dy * fy + dz * fz;
+  if (depth < 1 || depth > 80) return null;
+  const tanX = Math.tan((Camera.GetFov() * Math.PI / 180) / 2), aspect = 16 / 9;
+  const sx = 320 + ((dx * rx + dy * ry) / depth / tanX) * 320;
+  const sy = 224 - ((dx * ux + dy * uy + dz * uz) / depth / (tanX / aspect)) * 224;
+  return sx < 0 || sx > 640 || sy < 0 || sy > 448 ? null : { x: sx, y: sy };
+}
+
+function drawNames() {
+  for (let slot = 0; slot < 4; slot++) {
+    const r = remotes[slot];
+    if (!r || !Char.DoesExist(r.ped)) continue;
+    const head = r.ped.getCoordinates();
+    head.z += 1.1;
+    const at = toScreen(head);
+    if (!at) continue;
+    const key = nameKey(slot, r);
+    try {
+      Text.UseCommands(true);
+      Text.SetFont(1);
+      Text.SetScale(0.35, 1.4);
+      Text.SetCenter(true);
+      Text.SetColor(r.down ? 255 : 120, r.down ? 80 : 200, r.down ? 80 : 255, 255);
+      Text.SetDropshadow(1, 0, 0, 0, 255);
+      Text.Display(at.x, at.y, key);
+    } catch (e) {
+      if (!r.drawErr) { r.drawErr = true; log(`[sa-coop] draw name: ${e}`); }
+    }
+  }
 }
 
 function readRemote() {
@@ -150,7 +201,7 @@ function spawnPed(slot, s) {
   ped.setCantBeDraggedOut(true);
   ped.setKeepTask(true);
   const blip = Blip.AddForChar(ped);
-  try { blip.setAsFriendly(true); } catch (e) {}
+  try { blip.setAsFriendly(true); blip.changeDisplay(2); } catch (e) {} // map and radar only: the name is over the head
   log(`[sa-coop] friend ${slot} appeared`);
   return { ped, car: null, carModel: 0, blip, lastTask: 0, lostAt: 0, lastPos: null, rx: null, down: false, hinted: false };
 }
@@ -356,5 +407,6 @@ while (true) {
   handleOwnHealth(me, now);
   writeMine(me);
   syncRemotes(me, api.coop_slot(), now);
+  drawNames();
   if (pressed(KEY.G)) tryRideAlong(me);
 }

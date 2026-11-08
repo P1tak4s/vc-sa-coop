@@ -11,6 +11,7 @@ pub const WELCOME: u8 = 2; // server -> client: slot u8
 pub const DENY: u8 = 3; // server -> client: reason u8 (1 bad key, 2 full)
 pub const STATE: u8 = 4; // client -> server: State; server -> clients: slot u8 + State
 pub const LEAVE: u8 = 5; // client -> server: (empty); server -> clients: slot u8
+pub const NAMES: u8 = 7; // server -> clients: n u8, then n x (slot u8, nick [16])
 pub const REVIVE: u8 = 6; // client -> server: target slot u8; server -> clients: from slot u8, target slot u8
 
 /// One player's state as the game script sees it.
