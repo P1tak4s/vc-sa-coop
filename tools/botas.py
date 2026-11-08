@@ -27,7 +27,7 @@ while True:
         r, w = 15.0, 0.5  # 7.5 m/s around a 15 m circle
         a = (time.time() - t0) * w
         x, y = center[0] + r * math.cos(a), center[1] + r * math.sin(a)
-        heading = (math.degrees(a) + 180) % 360  # SA: 0 = north, counter-clockwise; tangent of the circle
+        heading = math.degrees(a) % 360  # SA: 0 = north (+y), counter-clockwise; at angle a the circle runs (-sin a, cos a)
         h = math.radians(heading)
         st = struct.pack("<12f4i", x, y, center[2] + 0.5, heading, 0, 0, 0, 0, 0, math.sin(h / 2), math.cos(h / 2), r * w,
                          1, 411, 100, 1000)

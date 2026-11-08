@@ -108,7 +108,7 @@ function removeRemote(slot) {
   log(`[sa-coop] friend ${slot} left`);
 }
 
-function driveRemote(r, s) {
+function driveRemote(r, s, now) {
   if (!r.car || r.carModel !== s.carModel) {
     dropCar(r);
     if (!loadModel(s.carModel)) return;
@@ -117,10 +117,36 @@ function driveRemote(r, s) {
     r.car.setProofs(true, true, true, true, true);
     r.carModel = s.carModel;
     r.ped.warpIntoCar(r.car);
+    r.rx = null;
   }
-  r.car.setCoordinatesNoOffset(s.x, s.y, s.z);
+  // a new packet: remember where and when, and how fast it moved since the last one
+  if (r.rx === null || r.rx === undefined || s.x !== r.rx || s.y !== r.ry || s.z !== r.rz) {
+    if (r.rx !== null && r.rx !== undefined && now > r.rt) {
+      const dt = (now - r.rt) / 1000;
+      r.vx = (s.x - r.rx) / dt; r.vy = (s.y - r.ry) / dt; r.vz = (s.z - r.rz) / dt;
+    } else { r.vx = r.vy = r.vz = 0; }
+    r.rx = s.x; r.ry = s.y; r.rz = s.z; r.rt = now;
+  }
+  // every frame: where they should be now (dead reckoning, at most 0.3 s ahead), eased from where the car is
+  const ahead = Math.min((now - r.rt) / 1000, 0.3);
+  const tx = r.rx + r.vx * ahead, ty = r.ry + r.vy * ahead, tz = r.rz + r.vz * ahead;
+  const c = r.car.getCoordinates();
+  const ex = tx - c.x, ey = ty - c.y, ez = tz - c.z;
+  const err = Math.sqrt(ex * ex + ey * ey + ez * ez);
+  const speed = Math.sqrt(r.vx * r.vx + r.vy * r.vy);
+  if (err > 2) {
+    // too far off: put it where it should be (moving it every frame stops the wheels, so only now)
+    r.car.setCoordinatesNoOffset(tx, ty, tz);
+    r.car.setQuaternion(s.qx, s.qy, s.qz, s.qw);
+    r.car.setForwardSpeed(speed);
+    return;
+  }
+  // close enough: let the game's physics drive it, so wheels turn and suspension works.
+  // Steer by the sender's rotation; catch up or fall back through the speed along the way it faces.
   r.car.setQuaternion(s.qx, s.qy, s.qz, s.qw);
-  r.car.setForwardSpeed(s.carSpeed);
+  let along = 0;
+  if (speed > 0.5) along = (ex * r.vx + ey * r.vy) / speed; // + ahead of us, - behind
+  r.car.setForwardSpeed(Math.max(0, speed + along * 1.5));
 }
 
 function walkRemote(r, s, now) {
@@ -160,7 +186,7 @@ let announced = 0;
 let started = false;
 
 while (true) {
-  wait(50);
+  wait(0);
   if (!player.isPlaying()) continue;
   if (!started) {
     started = true;
@@ -188,7 +214,8 @@ while (true) {
     if (slot === mySlot) continue;
     if (!coopGet(slot, theirs)) {
       const r = remotes[slot];
-      if (r && ++r.lost > 100) removeRemote(slot); // 5 s without them
+      if (r && !r.lostAt) r.lostAt = now;
+      if (r && now - r.lostAt > 5000) removeRemote(slot); // 5 s without them
       continue;
     }
     const s = readRemote();
@@ -196,9 +223,9 @@ while (true) {
     if (r && !Char.DoesExist(r.ped)) { remotes[slot] = null; r = null; }
     if (!r) r = remotes[slot] = spawnPed(slot, s);
     if (!r) continue;
-    r.lost = 0;
+    r.lostAt = 0;
     try {
-      if (s.inCar) driveRemote(r, s);
+      if (s.inCar) driveRemote(r, s, now);
       else walkRemote(r, s, now);
     } catch (e) {
       log(`[sa-coop] sync ${slot}: ${e}`);
