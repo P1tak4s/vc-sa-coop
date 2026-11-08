@@ -21,7 +21,8 @@ const api = {};
 try {
   for (const name of ["coop_start", "coop_code", "coop_status", "coop_slot", "coop_send", "coop_get", "coop_revive",
                       "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send",
-                      "coop_ents_get", "coop_is_host", "coop_my_skin", "coop_set_partner", "coop_warp_passenger"]) {
+                      "coop_ents_get", "coop_is_host", "coop_my_skin", "coop_set_partner", "coop_warp_passenger",
+                      "coop_track", "coop_forget", "coop_take_tracked"]) {
     api[name] = Memory.Fn.X64(lib.getProcedure(name));
   }
 } catch (e) {
@@ -34,6 +35,8 @@ const A = {
   pedPool: 0x545DE38, vehPool: 0x545DE30, pedSize: 0xB78, vehSize: 0x7B8,
   currArea: 0x545DC44,       // CGame::currArea (int)
   viewMatrix: 0x4E2A9A8,     // TheCamera + 0x7A8: world -> view
+  camera: 0x4E2A200,         // TheCamera: matrix forward +0x10, position +0x30
+  fov: 0x4DF05B8,            // CDraw::ms_fFOV (horizontal, degrees)
 };
 // entity fields (object pointer + offset)
 const E = { right: 0x08, forward: 0x18, up: 0x28, pos: 0x38, area: 0x7B, moveSpeed: 0xFC };
@@ -170,15 +173,26 @@ function nameKey(slot, r) {
 }
 
 // world point -> the 640 x 448 screen the game's text uses, through the camera's view matrix; null if not seen
+// The camera's position and forward vector and the FOV from memory, then the same projection as SA (which worked):
+// right = forward x world up, up = right x forward; 16:9 screen.
 function toScreen(p) {
-  const m = A.viewMatrix;
-  const f = (o) => Memory.ReadFloat(m + o, false, true);
-  const vx = p.x * f(0x00) + p.y * f(0x10) + p.z * f(0x20) + f(0x30);
-  const vy = p.x * f(0x04) + p.y * f(0x14) + p.z * f(0x24) + f(0x34);
-  const vz = p.x * f(0x08) + p.y * f(0x18) + p.z * f(0x28) + f(0x38);
-  if (vz <= 1 || vz > 80) return null;
-  const sx = vx / vz, sy = vy / vz;
-  return sx < 0 || sx > 1 || sy < 0 || sy > 1 ? null : { x: sx * 640, y: sy * 448 };
+  const rd = (o) => Memory.ReadFloat(A.camera + o, false, true);
+  const cam = { x: rd(0x30), y: rd(0x34), z: rd(0x38) };
+  let fx = rd(0x10), fy = rd(0x14), fz = rd(0x18);
+  const fl = Math.sqrt(fx * fx + fy * fy + fz * fz);
+  if (!(fl > 0.5 && fl < 1.5)) return null;
+  fx /= fl; fy /= fl; fz /= fl;
+  let rx = fy, ry = -fx; const rl = Math.sqrt(rx * rx + ry * ry) || 1; rx /= rl; ry /= rl;
+  const ux = ry * fz, uy = -rx * fz, uz = rx * fy - ry * fx;
+  const dx = p.x - cam.x, dy = p.y - cam.y, dz = p.z - cam.z;
+  const depth = dx * fx + dy * fy + dz * fz;
+  if (depth < 1 || depth > 80) return null;
+  let fov = Memory.ReadFloat(A.fov, false, true);
+  if (!(fov > 20 && fov < 140)) fov = 70;
+  const tanX = Math.tan((fov * Math.PI / 180) / 2), aspect = 16 / 9;
+  const sx = 320 + ((dx * rx + dy * ry) / depth / tanX) * 320;
+  const sy = 224 - ((dx * ux + dy * uy + dz * uz) / depth / (tanX / aspect)) * 224;
+  return sx < 0 || sx > 640 || sy < 0 || sy > 448 ? null : { x: sx, y: sy };
 }
 
 function drawNames() {
@@ -325,13 +339,13 @@ function spawnPed(slot, s) {
   const model = lookModel(slot, look);
   if (!model) return null; // not in memory yet: next frame
   log(`[vc-coop] friend ${slot}: creating with model ${model}`);
-  const ped = Char.Create(4, model, s.x, s.y, s.z);
+  const ped = track(KIND.PED, Char.Create(4, model, s.x, s.y, s.z));
   Streaming.MarkModelAsNoLongerNeeded(model);
   placeAt(pedPtr(ped), s.x, s.y, s.z);
   ped.setProofs(true, true, true, true, true); // traffic and cops must not kill the copy of your friend
   ped.setCantBeDraggedOut(true);
   try { ped.setHeedThreats(false); ped.shutUp(true); ped.setStayInSamePlace(false); } catch (e) {}
-  const blip = Blip.AddForChar(ped);
+  const blip = track(KIND.BLIP, Blip.AddForChar(ped));
   try { blip.changeDisplay(2); } catch (e) {} // map and radar only: the name is over the head
   log(`[vc-coop] friend ${slot} appeared`);
   return { ped, car: null, carModel: 0, blip, lastTask: 0, lostAt: 0, lastPos: null, rx: null, down: false, look, area: -1 };
@@ -355,7 +369,7 @@ function dropCar(r) {
     if (carExists(r.car)) {
       const c = r.car.getCoordinates();
       if (r.ped.isInAnyCar()) r.ped.warpFromCarToCoord(c.x, c.y, c.z);
-      r.car.delete(); // our copy of their car: no wreck left behind
+      forget(KIND.CAR, r.car); r.car.delete(); // our copy of their car: no wreck left behind
     }
   } catch (e) {}
   r.car = null; r.carModel = 0; r.rx = null;
@@ -365,8 +379,8 @@ function removeRemote(slot) {
   const r = remotes[slot];
   if (!r) return;
   dropCar(r);
-  try { r.blip.remove(); } catch (e) {}
-  try { r.ped.delete(); } catch (e) {}
+  try { forget(KIND.BLIP, r.blip); r.blip.remove(); } catch (e) {}
+  try { forget(KIND.PED, r.ped); r.ped.delete(); } catch (e) {}
   remotes[slot] = null;
   log(`[vc-coop] friend ${slot} left`);
 }
@@ -375,7 +389,7 @@ function driveRemote(r, s, now) {
   if (!r.car || r.carModel !== s.carModel || !carExists(r.car)) {
     dropCar(r);
     if (s.carModel < 130 || s.carModel > 236 || !modelReady(s.carModel)) return; // the car appears when loaded
-    r.car = Car.Create(s.carModel, s.x, s.y, s.z);
+    r.car = track(KIND.CAR, Car.Create(s.carModel, s.x, s.y, s.z));
     Streaming.MarkModelAsNoLongerNeeded(s.carModel);
     r.car.setProofs(true, true, true, true, true);
     r.carModel = s.carModel;
@@ -450,12 +464,12 @@ function rideRemote(r, s, mySlot, me) {
     try {
       const pp = pedPtr(r.ped), model = pp ? Memory.ReadI16(pp + S.modelIndex, false, false) : SKINS[0];
       if (modelReady(model)) {
-        try { r.blip.remove(); } catch (e) {}
-        r.ped.delete();
-        r.ped = Char.CreateAsPassenger(car, 4, model, 0);
+        try { forget(KIND.BLIP, r.blip); r.blip.remove(); } catch (e) {}
+        forget(KIND.PED, r.ped); r.ped.delete();
+        r.ped = track(KIND.PED, Char.CreateAsPassenger(car, 4, model, 0));
         r.ped.setProofs(true, true, true, true, true);
         r.ped.setCantBeDraggedOut(true);
-        r.blip = Blip.AddForChar(r.ped);
+        r.blip = track(KIND.BLIP, Blip.AddForChar(r.ped));
         try { r.blip.changeDisplay(2); } catch (e) {}
         r.weapon = -1;
       }
@@ -469,6 +483,26 @@ function rideRemote(r, s, mySlot, me) {
 }
 
 function now() { return Date.now(); }
+
+// what we create is remembered in the DLL; a reloaded script deletes the previous copies (no ghost friends)
+const KIND = { PED: 1, CAR: 2, BLIP: 3 };
+function track(kind, obj) { try { api.coop_track(kind, +obj); } catch (e) {} return obj; }
+function forget(kind, obj) { try { if (obj) api.coop_forget(kind, +obj); } catch (e) {} }
+function cleanUpPrevious() {
+  const buf = Memory.Allocate(8 * 512);
+  const n = api.coop_take_tracked(buf, 512);
+  let gone = 0;
+  for (let i = 0; i < n; i++) {
+    const h = Memory.ReadI32(buf + i * 8, false, false), kind = Memory.ReadI32(buf + i * 8 + 4, false, false);
+    try {
+      if (kind === KIND.PED && Char.DoesExist(h)) { new Char(h).delete(); gone++; }
+      else if (kind === KIND.CAR && carExists(h)) { new Car(h).delete(); gone++; }
+      else if (kind === KIND.BLIP) { new Blip(h).remove(); gone++; }
+    } catch (e) {}
+  }
+  Memory.Free(buf);
+  if (n) log(`[vc-coop] removed ${gone} of ${n} things left by the previous script`);
+}
 
 function seatFree(car) {
   try { return car.isPassengerSeatFree(0) || car.isPassengerSeatFree(1) || car.isPassengerSeatFree(2); } catch (e) { return false; }
@@ -506,17 +540,24 @@ function walkRemote(r, s, t) {
   }
   const p = r.ped.getCoordinates();
   const d = Math.sqrt(dist2(p, s));
-  if (d > 5) {
+  // their own velocity when they send one (players do), else what we measured from the packets
+  const sv = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
+  const speed = sv > 0.2 ? sv : r.speed;
+  const ux = sv > 0.2 ? s.vx / sv : r.ux, uy = sv > 0.2 ? s.vy / sv : r.uy;
+  if (d > 3) {
     r.ped.setCoordinates(s.x, s.y, s.z);
     placeAt(pedPtr(r.ped), s.x, s.y, s.z);
     r.ped.setHeading(s.heading);
     r.moving = false;
-  } else if (r.speed > 0.3 || d > 1) {
-    if (t - r.lastTask > 250) {
-      const gx = s.x + r.ux * 1.5, gy = s.y + r.uy * 1.5;
+  } else if (speed > 0.3 || d > 0.8) {
+    if (t - r.lastTask > 200) {
+      // aim where they will be in 0.6 s; behind them: one gait faster to catch up
+      const lead = Math.max(1.0, speed * 0.6);
+      const gx = s.x + ux * lead, gy = s.y + uy * lead;
+      const pace = speed + d * 2;
       try {
-        if (r.speed > 6) r.ped.setObjSprintToCoord(gx, gy);
-        else if (r.speed > 2.5) r.ped.setObjRunToCoord(gx, gy);
+        if (pace > 6) r.ped.setObjSprintToCoord(gx, gy);
+        else if (pace > 2.5) r.ped.setObjRunToCoord(gx, gy);
         else r.ped.setObjGotoCoordOnFoot(gx, gy);
       } catch (e) { log(`[vc-coop] walk: ${e}`); }
       r.lastTask = t; r.moving = true;
@@ -843,8 +884,11 @@ function sendMissionEntities() {
 function dropProxy(h) {
   const p = proxies.get(h);
   if (!p) return;
-  try { if (p.blip) p.blip.remove(); } catch (e) {}
-  try { if (p.kind === 2 && Char.DoesExist(p.ent)) p.ent.delete(); if (p.kind === 1 && carExists(p.ent)) p.ent.delete(); } catch (e) {}
+  try { if (p.blip) { forget(KIND.BLIP, p.blip); p.blip.remove(); } } catch (e) {}
+  try {
+    forget(p.kind === 2 ? KIND.PED : KIND.CAR, p.ent);
+    if (p.kind === 2 && Char.DoesExist(p.ent)) p.ent.delete(); if (p.kind === 1 && carExists(p.ent)) p.ent.delete();
+  } catch (e) {}
   proxies.delete(h);
 }
 
@@ -867,11 +911,11 @@ function mirrorMissionEntities() {
         if (dead || !(kind === 2 ? pedModel > 0 && pedModel < 109 : model >= 130 && model <= 236)) continue;
         const use = kind === 2 ? pedModel : model;
         if (!modelReady(use)) continue; // created on a later frame
-        const ent = kind === 2 ? Char.Create(18, use, x, y, z) : Car.Create(use, x, y, z); // 18: criminal
+        const ent = kind === 2 ? track(KIND.PED, Char.Create(18, use, x, y, z)) : track(KIND.CAR, Car.Create(use, x, y, z)); // 18: criminal
         Streaming.MarkModelAsNoLongerNeeded(use);
         let blip = null;
         if (kind === 2) {
-          blip = Blip.AddForChar(ent);
+          blip = track(KIND.BLIP, Blip.AddForChar(ent));
           try { blip.changeColor(0); } catch (e) {} // red: a mission enemy or target
           try { ent.setObjKillPlayerOnFoot(player); } catch (e) {}
         }
@@ -880,7 +924,7 @@ function mirrorMissionEntities() {
       }
       if (dead) {
         if (p.kind === 2 && p.ent.getHealth() > 0) p.ent.setHealth(0);
-        if (p.blip) { try { p.blip.remove(); } catch (e) {} p.blip = null; }
+        if (p.blip) { try { forget(KIND.BLIP, p.blip); p.blip.remove(); } catch (e) {} p.blip = null; }
         continue;
       }
       // damage done here goes to the owner, whose game decides
@@ -945,7 +989,7 @@ let guestBlips = [];
 function isGuest() { return api.coop_status() === 2 && !api.coop_is_host(); }
 
 function storyTick(t) {
-  if (!isGuest() && guestBlips.length) { for (const b of guestBlips) { try { b.remove(); } catch (e) {} } guestBlips = []; }
+  if (!isGuest() && guestBlips.length) { for (const b of guestBlips) { try { forget(KIND.BLIP, b); b.remove(); } catch (e) {} } guestBlips = []; }
   if (isGuest() || !onMission()) return;
   if (S.brief) {
     if (ptr(S.brief + S.briefText, true)) {
@@ -979,13 +1023,13 @@ function onStoryEvent(kind, text) {
     heard.text = key;
     if (/^[A-Z0-9_]{1,8}$/i.test(key)) { try { Text.PrintNow(key, Math.min(parseInt(ms, 10) || 4000, 15000), 1); } catch (e) {} }
   } else if (kind === EVS.BLIPS) {
-    for (const b of guestBlips) { try { b.remove(); } catch (e) {} }
+    for (const b of guestBlips) { try { forget(KIND.BLIP, b); b.remove(); } catch (e) {} }
     guestBlips = [];
     if (text === "-") return;
     for (const p of text.split(";")) {
       const [x, y, z, col] = p.split(",").map(Number);
       if (![x, y, z].every(Number.isFinite)) continue;
-      try { const b = Blip.AddForCoord(x, y, z); if (col <= 8) b.changeColor(col); guestBlips.push(b); } catch (e) {}
+      try { const b = track(KIND.BLIP, Blip.AddForCoord(x, y, z)); if (col <= 8) b.changeColor(col); guestBlips.push(b); } catch (e) {}
     }
   }
 }
@@ -1042,6 +1086,7 @@ function report(me, t) {
 
 // ---- main loop ------------------------------------------------------------------------------------------
 log("[vc-coop] loaded");
+try { cleanUpPrevious(); } catch (e) { log(`[vc-coop] cleanup: ${e}`); }
 let started = false, announced = -1, lastCode = "", lastCodeCheck = 0;
 let tracedTicks = 0;
 

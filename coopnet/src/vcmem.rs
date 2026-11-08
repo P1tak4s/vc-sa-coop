@@ -79,3 +79,40 @@ pub extern "C" fn coop_warp_passenger(ped: i64, car: i64) -> i64 {
         1
     }
 }
+
+// ---- what the script created (peds, cars, blips), kept in the DLL: a reloaded script deletes the previous copies ----
+// Entries are kind << 32 | handle (kind 1 ped, 2 car, 3 blip). Deleted ones are forgotten at once, so a handle the
+// game hands out again later is never touched.
+static TRACKED: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+
+#[no_mangle]
+pub extern "C" fn coop_track(kind: i64, handle: i64) -> i64 {
+    let code = kind << 32 | (handle & 0xFFFF_FFFF);
+    let mut t = TRACKED.lock().unwrap();
+    if t.len() < 512 && !t.contains(&code) {
+        t.push(code);
+    }
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn coop_forget(kind: i64, handle: i64) -> i64 {
+    let code = kind << 32 | (handle & 0xFFFF_FFFF);
+    TRACKED.lock().unwrap().retain(|c| *c != code);
+    1
+}
+
+/// Hand over everything tracked (at most `max` into `out`) and clear the list. Returns how many.
+#[no_mangle]
+pub unsafe extern "C" fn coop_take_tracked(out: *mut i64, max: i64) -> i64 {
+    if out.is_null() || max <= 0 {
+        return 0;
+    }
+    let mut t = TRACKED.lock().unwrap();
+    let n = t.len().min(max as usize);
+    for (i, c) in t.drain(..n).enumerate() {
+        *out.add(i) = c;
+    }
+    t.clear();
+    n as i64
+}
