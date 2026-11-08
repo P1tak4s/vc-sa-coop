@@ -272,6 +272,7 @@ unsafe fn fname(obj: *const u8) -> String {
 // UStruct: SuperStruct +0x40, ChildProperties +0x50. FField: Class +0x08, Next +0x20, Name +0x28.
 // FProperty: Offset_Internal +0x4C. FFieldClass: Name +0x00.
 
+#[allow(dead_code)]
 unsafe fn fname_at(p: *const u8) -> String {
     // same pool decoding as fname(), for an FName stored at `p`
     let idx = *(p as *const u32);
@@ -291,6 +292,7 @@ unsafe fn fname_at(p: *const u8) -> String {
     }
 }
 
+#[allow(dead_code)]
 unsafe fn read_fstring(p: *const u8) -> Option<String> {
     let data = *(p as *const *const u16);
     let num = *(p.add(8) as *const i32);
@@ -298,6 +300,7 @@ unsafe fn read_fstring(p: *const u8) -> Option<String> {
 }
 
 /// Every string property of `obj` (own class and parents): (name, value). Logs the full property list once per class.
+#[allow(dead_code)]
 unsafe fn string_props(obj: *const u8) -> Vec<(String, String)> {
     let mut out = vec![];
     let mut class = *(obj.add(0x10) as *const *const u8);
@@ -359,13 +362,27 @@ unsafe extern "system" fn detour(this: *mut u8, func: *mut u8, parms: *mut u8) {
                 if idx > MAX_IDX { MAX_IDX = idx; }
                 log_once(&format!("InteractedButton on {} (outer {})", class_of(this), outer_of(this)));
             } else if name.contains("OnButtonClickedEvent") && !this.is_null() {
-                // the clicked button (or the widget that owns it) carries its menu entry's function string
-                let mut hit = string_props(this).iter().any(|(_, v)| v == "COOP");
-                let outer = *(this.add(0x20) as *const *const u8);
-                if !hit && !outer.is_null() {
-                    hit = string_props(outer).iter().any(|(_, v)| v == "COOP");
+                // the menu button knows its entry: ValueToBind (+0x318) = index in LeftButtons. Which menu it
+                // belongs to comes from its outer chain. co-op sits before exit: main menu 4, pause menu 7.
+                let value = *(this.add(0x318) as *const i32);
+                let mut menu = String::new();
+                let mut o = *(this.add(0x20) as *const *const u8);
+                for _ in 0..8 {
+                    if o.is_null() {
+                        break;
+                    }
+                    let c = class_of(o);
+                    if c.contains("MainMenu") || c.contains("PauseMenu") {
+                        menu = c;
+                        break;
+                    }
+                    o = *(o.add(0x20) as *const *const u8);
                 }
-                crate::log_line(&format!("click on {} coop={hit}", class_of(this)));
+                let cls = class_of(this);
+                let main_btn = cls == "UI_Button_MainMenu_SA_C";
+                let hit = (menu.contains("MainMenu") || (menu.is_empty() && main_btn)) && value == 4
+                    || menu.contains("PauseMenu") && value == 7;
+                crate::log_line(&format!("click on {cls} value={value} menu={menu} coop={hit}"));
                 if hit {
                     OPEN.store(true, Ordering::SeqCst);
                 }
