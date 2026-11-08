@@ -86,6 +86,15 @@ impl ImguiRenderLoop for CoopMenu {
         style.colors[StyleColor::TextSelectedBg as usize] = [0.55, 0.53, 0.75, 0.6];
     }
 
+    fn before_render<'a>(&'a mut self, ctx: &mut imgui::Context, _rc: &'a mut dyn RenderContext) {
+        // in the game the cursor is hidden and held in the middle: draw our own and let the mouse move freely
+        let open = OPEN.load(Ordering::SeqCst);
+        ctx.io_mut().mouse_draw_cursor = open;
+        if open {
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::ClipCursor(std::ptr::null()) };
+        }
+    }
+
     fn render(&mut self, ui: &mut Ui) {
         if !RENDERED.swap(true, Ordering::SeqCst) {
             crate::log_line("overlay: first frame drawn");
