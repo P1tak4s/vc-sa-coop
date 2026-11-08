@@ -384,14 +384,14 @@ fn retune_line(line: &str) -> Option<String> {
         return None; // IS_BIKE / IS_HELI / IS_PLANE / IS_BOAT
     }
     let num = |s: &str| s.parse::<f32>().ok();
-    let (com_z, traction, loss, accel, brake, damping) = (num(&f[7])?, num(&f[9])?, num(&f[10])?, num(&f[14])?, num(&f[17])?, num(&f[22])?);
+    // 11-08 v1 (grip x1.2, firmer springs, lower centre of mass) felt heavy: now lighter and quicker, a little more grip
+    let (traction, loss, accel, brake, lock) = (num(&f[9])?, num(&f[10])?, num(&f[14])?, num(&f[17])?, num(&f[20])?);
     let mut set = |i: usize, v: f32| f[i] = format!("{v:.3}");
-    set(7, com_z - 0.10);
-    set(9, (traction * 1.2).min(2.0));
-    set(10, (loss * 1.1).min(1.0));
-    set(14, (accel * 1.1).min(10.0));
-    set(17, (brake * 1.25).min(10.0));
-    set(22, (damping * 1.3).min(1.0));
+    set(9, (traction * 1.08).min(2.0));
+    set(10, (loss * 1.05).min(1.0));
+    set(14, accel * 1.25); // no cap: VC values go far above the documented 10 (Infernus 30); a cap made cars slow
+    set(17, brake * 1.2);
+    set(20, (lock * 1.1).min(40.0));
     f[19] = "1".into(); // ABS
     Some(f.join(" "))
 }
@@ -593,9 +593,10 @@ mod tests {
         let car = "INFERNUS        1500.0 1.9 4.6 1.3 0.0 0.0 -0.25 70  0.80 0.85 0.50 5 240.0 30.0 R P 11.0  0.51 0 30.0  1.5  0.10 0.0  0.27 35000 0.25 -0.10 0.5  0.4		40002004	1  1";
         let t = retune_line(car).unwrap();
         let f: Vec<&str> = t.split_whitespace().collect();
-        assert_eq!(f[9], "0.960");
+        assert_eq!(f[9], "0.864");
         assert_eq!(f[19], "1");
-        assert_eq!(f[7], "-0.350");
+        assert_eq!(f[7], "-0.25");
+        assert_eq!(f[14], "37.500");
         let bike = "PCJ600          200.0  0.8 2.1 1.1 0.0 0.05 -0.1 103 1.4  0.85 0.48 5 190.0 35.0 R P 15.0  0.50 0 30.0  1.2  0.15 0.0  0.10 10000 0.20 -0.10 0.55 0.0		10000		1  1";
         assert!(retune_line(bike).is_none());
         assert!(retune_line("; comment").is_none());
