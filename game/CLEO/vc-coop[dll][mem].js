@@ -51,6 +51,8 @@ const S = {
   radar: 0x5244C80, radarCount: 75, radarStride: 0x38, // CRadar::ms_RadarTrace
   rColour: 0, rType: 4, rPos: 0xC, rInUse: 0x27, rDisplay: 0x32, rTypeCoord: 4,
   modelIndex: 0x78,          // CEntity model index (i16)
+  cutRunning: 0x545D7BC,     // CCutsceneMgr running (bool)
+  cutName: 0x4F71BA0,        // the loaded cutscene's name
 };
 
 function ptr(addr, ib) { return Memory.ReadU32(addr, false, ib) + Memory.ReadU32(addr + 4, false, ib) * 0x100000000; }
@@ -194,6 +196,7 @@ function drawNames() {
       Text.SetCenter(true);
       Text.SetColor(r.down ? 255 : 120, r.down ? 80 : 200, r.down ? 80 : 255, 255);
       Text.Display(at.x, at.y, key);
+      r.drawnAt = Date.now();
     } catch (e) {
       if (!r.drawErr) { r.drawErr = true; log(`[vc-coop] draw name: ${e}`); }
     }
@@ -541,6 +544,7 @@ function syncRemotes(me, mySlot, t) {
       continue;
     }
     const s = readRemote();
+    lastState[slot] = s;
     let r = remotes[slot];
     if (r && !Char.DoesExist(r.ped)) { remotes[slot] = null; r = null; }
     if (r && r.look !== ((s.flags >> 16) & 0xff)) { removeRemote(slot); r = null; } // they changed their look
@@ -558,7 +562,7 @@ function syncRemotes(me, mySlot, t) {
       else if (s.inCar === 2) rideRemote(r, s, mySlot, me);
       else walkRemote(r, s, t);
     } catch (e) {
-      log(`[vc-coop] sync ${slot}: ${e}`);
+      noteError(`sync ${slot}: ${e}`);
     }
   }
 }
@@ -577,8 +581,9 @@ function tryRideAlong(me) {
 }
 
 // ---- shared world: weather, missions ---------------------------------------------------------------------
-const EV = { WEATHER: 1, CUTSCENE: 2, MISSION: 3 };
-let lastWeatherSent = -1, lastWeatherAt = 0, missionWas = "";
+const EV = { WEATHER: 1, CUTSCENE: 2, MISSION: 3, REPORT: 9 };
+let lastWeatherSent = -1, lastWeatherAt = 0, missionWas = "", cutWas = false;
+const heard = { cut: "-", mission: "-", text: "-", weather: "-" }; // what friends told us last (for the report)
 
 function sendEvent(kind, text) {
   for (let i = 0; i < text.length && i < 120; i++) Memory.WriteU8(evBuf + i, text.charCodeAt(i) & 0x7f, false, false);
@@ -611,17 +616,25 @@ function tellWorld(mySlot, t) {
   }
   const m = missionName();
   if (m !== missionWas) { missionWas = m; sendEvent(EV.MISSION, m); }
+  const cut = cutsceneNow();
+  if (cut && !cutWas) sendEvent(EV.CUTSCENE, cut);
+  cutWas = !!cut;
+}
+
+function cutsceneNow() {
+  try { return Memory.ReadU8(S.cutRunning, false, true) ? (readStr(S.cutName, 24, true) || "?") : ""; } catch (e) { return ""; }
 }
 
 function hearWorld() {
   let kind;
   while ((kind = api.coop_event_poll(evBuf)) > 0) {
     const text = readStr(evBuf, 127, false);
-    if (kind === EV.WEATHER) { const w = parseInt(text, 10); if (w >= 0 && w < 7) try { Weather.ForceNow(w); } catch (e) {} }
+    if (kind === EV.WEATHER) { heard.weather = text; const w = parseInt(text, 10); if (w >= 0 && w < 7) try { Weather.ForceNow(w); } catch (e) {} }
+    else if (kind === EV.CUTSCENE) { heard.cut = text; say(`VC Co-op: draugas ziuri pjuvi (${text})`); }
     else if (kind === 4 || kind === 5) onMissionEvent(kind, text);
     else if (kind === 6 || kind === 7) onStoryEvent(kind, text);
-    else if (kind === EV.MISSION) say(text ? `VC Co-op: draugas pradejo misija (${text})` : "VC Co-op: draugo misija baigesi");
-    // EV.CUTSCENE: a Vice City cutscene needs the objects its mission script creates, so it is not replayed here
+    else if (kind === EV.MISSION) { heard.mission = text || "-"; say(text ? `VC Co-op: draugas pradejo misija (${text})` : "VC Co-op: draugo misija baigesi"); }
+    // a friend's cutscene is told, not replayed: a Vice City cutscene needs the objects its mission script creates
   }
 }
 
@@ -811,6 +824,7 @@ function onStoryEvent(kind, text) {
   if (!isGuest()) return;
   if (kind === EVS.TEXT) {
     const [key, ms] = text.split(":");
+    heard.text = key;
     if (/^[A-Z0-9_]{1,8}$/i.test(key)) { try { Text.PrintNow(key, Math.min(parseInt(ms, 10) || 4000, 15000), 1); } catch (e) {} }
   } else if (kind === EVS.BLIPS) {
     for (const b of guestBlips) { try { b.remove(); } catch (e) {} }
@@ -837,6 +851,39 @@ function tellPartner(me) {
     break;
   }
   api.coop_set_partner(handle, near);
+}
+
+// ---- test report: what this game sees, sent to everyone every 2 s (tools/testbotas.py reads it) -------------
+// F<slot>: our copy of that friend (p exists, e metres from where they say they are, c car model / "pas" passenger,
+// ar interior, dn down, w weapon, nm name drawn in the last second). W: our own world. E: the last script error.
+const lastState = [null, null, null, null];
+let lastReportAt = 0, errors = 0, lastError = "", errorSent = "";
+
+function noteError(text) {
+  errors++; lastError = text; log(`[vc-coop] ${text}`);
+}
+
+function report(me, t) {
+  if (t - lastReportAt < 2000) return;
+  lastReportAt = t;
+  for (let slot = 0; slot < 4; slot++) {
+    const r = remotes[slot], s = lastState[slot];
+    if (!r || !s) continue;
+    let p = 0, e = -1, c = "-";
+    try {
+      if (Char.DoesExist(r.ped)) {
+        p = 1;
+        const at = r.ped.isInAnyCar() ? r.ped.storeCarIsInNoSave().getCoordinates() : r.ped.getCoordinates();
+        e = Math.sqrt(dist2(at, s));
+        if (r.ped.isInAnyCar()) c = r.car && carExists(r.car) ? String(r.carModel) : "pas";
+      }
+    } catch (err) { noteError(`report ${slot}: ${err}`); }
+    sendEvent(EV.REPORT, `F${slot} p=${p} e=${e.toFixed(1)} c=${c} ar=${r.area} dn=${r.down ? 1 : 0} w=${r.weapon || 0} nm=${t - (r.drawnAt || 0) < 1000 ? 1 : 0}`);
+  }
+  let hp = 0, inCar = 0;
+  try { hp = me.getHealth(); inCar = me.isInAnyCar() ? 1 : 0; } catch (err) {}
+  sendEvent(EV.REPORT, `W a=${currentArea()} car=${inCar} hp=${hp} down=${downed ? 1 : 0} cut=${cutsceneNow() || "-"} mis=${missionName() || "-"} host=${api.coop_is_host() ? 1 : 0} px=${proxies.size} gb=${guestBlips.length} hc=${heard.cut} hm=${heard.mission} ht=${heard.text} hw=${heard.weather} err=${errors}`.slice(0, 120));
+  if (lastError && lastError !== errorSent) { errorSent = lastError; sendEvent(EV.REPORT, `E ${lastError}`.slice(0, 120)); }
 }
 
 // ---- main loop ------------------------------------------------------------------------------------------
@@ -875,6 +922,7 @@ while (true) {
   tellWorld(api.coop_slot(), t);
   hearWorld();
   missionsTick(t);
+  report(me, t);
   if (pressed(KEY.G)) tryRideAlong(me);
   // F in a friend's car: straight out beside it (the car is moved every frame, which breaks the exit animation)
   if (pressed(KEY.F) && me.isInAnyCar()) {

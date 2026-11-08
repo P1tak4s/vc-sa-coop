@@ -186,20 +186,21 @@ pub extern "C" fn coop_host() -> i64 {
     if matches!(shared().lock().unwrap().status, 1 | 2) {
         return 1;
     }
-    let Ok(sock) = UdpSocket::bind(("0.0.0.0", DEFAULT_PORT)) else { return 0 };
+    // the next free port when DEFAULT_PORT is taken (another game or tool on this PC hosts already)
+    let Some((sock, port)) = (DEFAULT_PORT..DEFAULT_PORT + 10).find_map(|p| UdpSocket::bind(("0.0.0.0", p)).ok().map(|s| (s, p))) else { return 0 };
     shared().lock().unwrap().host = true;
     let key = relay::random_key();
     std::thread::spawn(move || relay::run_server(sock, key, Default::default()));
     if let Some(ip) = relay::lan_ip() {
-        set_code(make_code(ip.octets(), DEFAULT_PORT, key));
+        set_code(make_code(ip.octets(), port, key));
     }
     // UPnP can take seconds: the LAN code is there at once, the internet one replaces it when the router answers
     std::thread::spawn(move || {
-        if let Some(ip) = relay::upnp(DEFAULT_PORT) {
-            set_code(make_code(ip.octets(), DEFAULT_PORT, key));
+        if let Some(ip) = relay::upnp(port) {
+            set_code(make_code(ip.octets(), port, key));
         }
     });
-    start_client(Session { server: SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)), key, nick: my_nick() })
+    start_client(Session { server: SocketAddr::from(([127, 0, 0, 1], port)), key, nick: my_nick() })
 }
 
 fn set_code(code: String) {
@@ -246,7 +247,7 @@ pub unsafe extern "C" fn coop_name(slot: i64, out: *mut u8, max: i64) -> i64 {
 pub unsafe extern "C" fn coop_event_send(kind: i64, text: *const u8) -> i64 {
     let t = c_str(text);
     let mut ev = vec![kind as u8];
-    ev.extend(t.bytes().filter(|b| b.is_ascii_graphic()).take(120));
+    ev.extend(t.bytes().filter(|b| b.is_ascii_graphic() || *b == b' ').take(120)); // spaces: report lines
     let mut s = shared().lock().unwrap();
     if s.events_out.len() < 32 {
         s.events_out.push(ev);

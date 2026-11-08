@@ -90,7 +90,7 @@ impl State {
             && (0..=46).contains(&s.weapon) && (s.flags >> 8 & 0xff) <= 6;
         let model_ok = match s.in_car {
             0 => true,
-            1 => (400..=611).contains(&s.car_model),
+            1 => (400..=611).contains(&s.car_model) || (130..=236).contains(&s.car_model), // SA or Vice City vehicles
             2 => (0..MAX_PLAYERS as i32).contains(&s.car_model) && (0..=2).contains(&s.car_health),
             _ => false,
         };
@@ -168,6 +168,8 @@ mod tests {
         assert_eq!(State::from_bytes(&bad.to_bytes()), None);
         let bad_model = State { car_model: 9999, ..s };
         assert_eq!(State::from_bytes(&bad_model.to_bytes()), None);
+        let vc_car = State { car_model: 141, ..s }; // Vice City Infernus
+        assert_eq!(State::from_bytes(&vc_car.to_bytes()), Some(vc_car));
         let passenger = State { in_car: 2, car_model: 0, car_health: 0, ..s };
         assert_eq!(State::from_bytes(&passenger.to_bytes()), Some(passenger));
         let bad_seat = State { in_car: 2, car_model: 7, ..s };
