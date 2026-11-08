@@ -2,7 +2,7 @@
 //! name, a password, "Sukurti" (host) and "Prisijungti" (join). Plain Win32 on its own thread, so the game never
 //! waits for it. Loaded at game start because the ASI loader loads coopnet64.asi.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -10,7 +10,6 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus, VK_F9};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-static OPEN: AtomicBool = AtomicBool::new(false);
 
 const ID_NAME: i32 = 101;
 const ID_PW: i32 = 102;
@@ -29,11 +28,9 @@ pub fn hotkey_thread() {
     loop {
         std::thread::sleep(std::time::Duration::from_millis(40));
         let down = unsafe { GetAsyncKeyState(VK_F9 as i32) } as u16 & 0x8000 != 0;
-        if down && !was && game_has_focus() && !OPEN.swap(true, Ordering::SeqCst) {
-            std::thread::spawn(|| {
-                unsafe { run_window() };
-                OPEN.store(false, Ordering::SeqCst);
-            });
+        // F9 toggles the co-op menu drawn inside the game (the Win32 window is only a fallback, see run_window)
+        if down && !was && game_has_focus() {
+            crate::overlay::toggle();
         }
         was = down;
     }
@@ -99,6 +96,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
 }
 
+#[allow(dead_code)]
 unsafe fn run_window() {
     let inst = GetModuleHandleW(std::ptr::null());
     let class = w("SaCoopWindow");

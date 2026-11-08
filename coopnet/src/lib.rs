@@ -3,6 +3,7 @@
 //! The network runs on its own thread, so a slow or lost packet never stalls the game.
 
 mod dialog;
+mod overlay;
 mod steam;
 
 use proto::*;
@@ -441,7 +442,20 @@ pub(crate) fn start_steam_session(host: bool, name: String, pw: String) -> i64 {
 pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _reserved: *mut std::ffi::c_void) -> i32 {
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if reason == 1 && !STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let module = _module as usize;
         std::thread::spawn(dialog::hotkey_thread);
+        std::thread::spawn(move || unsafe {
+            // the "co-op" entry of the game's menus, then the menu drawn into the game (DX12, else DX11)
+            overlay::hook_menu();
+            let hinst = hudhook::windows::Win32::Foundation::HINSTANCE(module as isize);
+            let r = hudhook::Hudhook::builder()
+                .with::<hudhook::hooks::dx12::ImguiDx12Hooks>(overlay::CoopMenu::default())
+                .with::<hudhook::hooks::dx11::ImguiDx11Hooks>(overlay::CoopMenu::default())
+                .with_hmodule(hinst)
+                .build()
+                .apply();
+            log_line(&format!("overlay hooks: {:?}", r.is_ok()));
+        });
     }
     1
 }
