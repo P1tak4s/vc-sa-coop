@@ -30,10 +30,13 @@ while (true) {
   } catch (e) { continue; }
 
   if (me.isInAnyCar()) {
-    const car = me.storeCarIsIn(); // a mission car: the game will not remove it
-    if (!mine || +car !== +mine) {
+    // storeCarIsIn returns -1 on the Definitive Edition; take the car and make it a mission car ourselves
+    const car = me.storeCarIsInNoSave();
+    // during a mission the car may belong to the mission: releasing it later could delete it and break the mission
+    if (+car > 0 && !ONMISSION && (!mine || +car !== +mine)) {
       letGo();
       mine = car;
+      try { mine.setAsMissionCar(); } catch (e) { log(`[mano-masina] setAsMissionCar failed: ${e}`); }
       log(`[mano-masina] keeping car ${+car}`);
     }
     dropBlip(); // no blip while driving

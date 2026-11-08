@@ -2,18 +2,35 @@
 // SA Co-op (M1): your friend appears in your world, walks, runs and drives. Talks to coopnet64.dll (next to
 // SanAndreas.exe), which the launcher configured with a session. Each world stays its own: missions come later.
 
-const lib = DynamicLibrary.Load("coopnet64.dll");
-if (!lib) exit("coopnet64.dll not found");
-const fn = (name) => Fn.X64(lib.getProcedure(name));
-const coopStart = fn("coop_start"), coopStatus = fn("coop_status"), coopSlot = fn("coop_slot");
-const coopSend = fn("coop_send"), coopGet = fn("coop_get");
+// the DLL sits next to SanAndreas.exe; CLEO resolves relative names from its own folder, so try both
+let lib;
+for (const path of ["coopnet64.dll", "../coopnet64.dll", "CLEO/../coopnet64.dll"]) {
+  lib = DynamicLibrary.Load(path);
+  log(`[sa-coop] load ${path}: ${lib ? "ok" : "no"}`);
+  if (lib) break;
+}
+if (!lib) { log("[sa-coop] coopnet64.dll not found"); exit("coopnet64.dll not found"); }
+let coopStart, coopStatus, coopSlot, coopSend, coopGet, mine, theirs;
+try {
+  const fn = (name) => {
+    const addr = lib.getProcedure(name);
+    log(`[sa-coop] ${name} at ${addr}`);
+    return Memory.Fn.X64(addr);
+  };
+  coopStart = fn("coop_start"); coopStatus = fn("coop_status"); coopSlot = fn("coop_slot");
+  coopSend = fn("coop_send"); coopGet = fn("coop_get");
+  mine = Memory.Allocate(64);
+  theirs = Memory.Allocate(64);
+  log(`[sa-coop] buffers ${mine} ${theirs}`);
+} catch (e) {
+  log(`[sa-coop] setup failed: ${e}`);
+  exit("setup failed");
+}
 
 // proto::State, 64 bytes
 const SIZE = 64;
 const F = { x: 0, y: 4, z: 8, heading: 12, vx: 16, vy: 20, vz: 24, qx: 28, qy: 32, qz: 36, qw: 40, carSpeed: 44 };
 const I = { inCar: 48, carModel: 52, health: 56, carHealth: 60 };
-const mine = Memory.Allocate(SIZE);
-const theirs = Memory.Allocate(SIZE);
 const SKINS = [105, 106, 107, 105]; // Grove Street looks until we sync clothes
 
 const player = new Player(0);
@@ -149,6 +166,7 @@ while (true) {
     started = true;
     if (!coopStart()) {
       showTextBox("SA Co-op: paleisk zaidima per SA Co-op langa");
+      log("[sa-coop] no session file");
       exit("no session");
     }
   }
