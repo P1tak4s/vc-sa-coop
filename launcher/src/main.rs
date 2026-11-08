@@ -164,6 +164,19 @@ fn main() -> eframe::Result {
         let _ = std::fs::write(dir.join("valdymas.log"), line);
         return Ok(());
     }
+    // sa-coop.exe --reshade sa|vc 0|1
+    if let Some(i) = args.iter().position(|a| a == "--reshade") {
+        let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
+        let on = args.get(i + 2).is_none_or(|v| v != "0");
+        let line = match find_game(g) {
+            Some(dir) => set_reshade(&dir, on).unwrap_or_else(|e| e),
+            None => format!("{} nerastas", g.name),
+        };
+        let dir = data_dir(g);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("reshade.log"), line);
+        return Ok(());
+    }
     // sa-coop.exe --grafika sa|vc 0..3 (Išjungta, Paprasta, Gražu, Maksimum)
     if let Some(i) = args.iter().position(|a| a == "--grafika") {
         let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
@@ -412,6 +425,44 @@ fn set_handling(g: &GameInfo, win64: &Path, better: bool) -> Result<String, Stri
     Ok(format!("Valdymas: geresnis, {n} mašinų (įsigalios kitą kartą paleidus žaidimą)"))
 }
 
+// ---- ReShade (extra\reshade: the official ReShade64.dll, our VCCoop look) as dxgi.dll next to the game ----------
+fn reshade_src() -> PathBuf {
+    bundle_dir().with_file_name("extra").join("reshade")
+}
+
+/// On when the game's dxgi.dll is our ReShade copy (a dxgi.dll of some other mod is never touched).
+fn reshade_on(win64: &Path) -> Option<bool> {
+    let ours = std::fs::read(reshade_src().join("ReShade64.dll")).ok();
+    match std::fs::read(win64.join("dxgi.dll")) {
+        Err(_) => Some(false),
+        Ok(have) if ours.as_ref() == Some(&have) => Some(true),
+        Ok(_) => None,
+    }
+}
+
+fn set_reshade(win64: &Path, on: bool) -> Result<String, String> {
+    let src = reshade_src();
+    match reshade_on(win64) {
+        None => return Err("žaidimo aplanke jau yra kito modo dxgi.dll: nekeičiu".into()),
+        Some(now) if now == on => return Ok(format!("ReShade jau {}", if on { "įjungtas" } else { "išjungtas" })),
+        _ => {}
+    }
+    if !on {
+        std::fs::remove_file(win64.join("dxgi.dll")).map_err(|e| e.to_string())?;
+        return Ok("ReShade išjungtas".into());
+    }
+    if !src.join("ReShade64.dll").is_file() {
+        return Err("pakete nėra extra\\reshade".into());
+    }
+    let mut log = vec![];
+    if !win64.join("ReShade.ini").exists() {
+        std::fs::copy(src.join("ReShade.ini"), win64.join("ReShade.ini")).map_err(|e| e.to_string())?;
+    }
+    copy_tree(&GAMES[0], &src.join("reshade-shaders"), &win64.join("reshade-shaders"), &mut log).map_err(|e| e.to_string())?;
+    std::fs::copy(src.join("ReShade64.dll"), win64.join("dxgi.dll")).map_err(|e| e.to_string())?;
+    Ok("ReShade įjungtas: Home atidaro jo meniu, Scroll Lock išjungia efektus".into())
+}
+
 fn installed(g: &GameInfo, game: &Path) -> bool {
     ["version.dll", "cleo_redux64.asi", "coopnet64.asi", g.script].iter().all(|f| game.join(f).is_file())
 }
@@ -540,6 +591,24 @@ impl eframe::App for App {
                             }
                         }
                     });
+                }
+            }
+            if let Some(dir) = self.games[self.which].clone() {
+                match reshade_on(&dir) {
+                    None => {
+                        ui.small("ReShade: žaidime jau yra kito modo dxgi.dll");
+                    }
+                    Some(on) => {
+                        ui.horizontal(|ui| {
+                            ui.label("ReShade spalvos:");
+                            for (want, name) in [(false, "Išjungta"), (true, "Įjungta")] {
+                                if ui.selectable_label(on == want, name).clicked() && on != want {
+                                    let m = set_reshade(&dir, want).unwrap_or_else(|e| e);
+                                    self.msg.push(m);
+                                }
+                            }
+                        });
+                    }
                 }
             }
             match graphics_level(g) {
