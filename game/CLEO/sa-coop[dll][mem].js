@@ -15,7 +15,7 @@ if (!lib) { log("[sa-coop] coopnet64.asi not found"); exit("coopnet64.asi not fo
 const api = {};
 try {
   for (const name of ["coop_start", "coop_host", "coop_join_clipboard", "coop_code", "coop_status", "coop_slot",
-                      "coop_send", "coop_get", "coop_revive", "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send", "coop_ents_get", "coop_is_host", "coop_my_skin"]) {
+                      "coop_send", "coop_get", "coop_revive", "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send", "coop_ents_get", "coop_is_host", "coop_my_skin", "coop_set_partner"]) {
     api[name] = Memory.Fn.X64(lib.getProcedure(name));
   }
 } catch (e) {
@@ -519,7 +519,7 @@ const MRVA = { cleanup: 0x53DB410, money: 0x53EB808 };
 const ENT_SIZE = 28, MAX_ENTS = 40;
 const entBuf = Memory.Allocate(ENT_SIZE * MAX_ENTS);
 const EVM = { HIT: 4, MONEY: 5 };
-let missionMoneyAt = null, lastEntsAt = 0;
+let missionMoneyAt = null, lastEntsAt = 0, passedAt = "";
 const proxies = new Map(); // owner handle -> { kind, ent, model, blip, setHp, seen }
 
 function ownMissionEntities() {
@@ -626,13 +626,14 @@ function missionsTick(now) {
   lastEntsAt = now;
   storyTick(now);
   if (ONMISSION && !isGuest()) {
-    if (missionMoneyAt === null) missionMoneyAt = Memory.ReadI32(MRVA.money, false, true);
+    if (missionMoneyAt === null) { missionMoneyAt = Memory.ReadI32(MRVA.money, false, true); passedAt = readStr(0x523A158, 8, true); }
     sendMissionEntities();
     for (const h of [...proxies.keys()]) dropProxy(h); // our own mission: no copies of a friend's
   } else {
     if (missionMoneyAt !== null) {
       const earned = Memory.ReadI32(MRVA.money, false, true) - missionMoneyAt;
-      if (earned > 0) sendEvent(EVM.MONEY, String(earned));
+      const passed = readStr(0x523A158, 8, true) !== passedAt; // a failed mission pays nothing
+      if (earned > 0 && passed) sendEvent(EVM.MONEY, String(earned));
       missionMoneyAt = null;
     }
     mirrorMissionEntities(now);
@@ -669,8 +670,11 @@ function onMissionAddr() {
 
 // the guest's own story stays still while it plays the host's
 function lockGuestStory() {
+  // The guest's own missions are refused in the DLL (CanPlayerStartMission). Release a lock left by older builds.
   const a = onMissionAddr();
-  if (!a) return;
+  if (a && guestLocked) { guestLocked = false; Memory.WriteI32(a, 0, false, true); }
+  if (!isGuest() && guestBlips.length) { for (const b of guestBlips) { try { b.remove(); } catch (e) {} } guestBlips = []; }
+  return;
   // inside a building (a safehouse with its save disk) the lock is off, so the guest can save its own game
   let inside = false;
   try { inside = player.getChar().getAreaVisible() !== 0; } catch (e) {}
@@ -733,6 +737,21 @@ function onStoryEvent(kind, text) {
   }
 }
 
+function tellPartner(me) {
+  let handle = -1, near = 0;
+  for (const r of remotes) {
+    if (!r || !Char.DoesExist(r.ped)) continue;
+    handle = +r.ped;
+    try {
+      const a = me.getCoordinates(), b = r.ped.getCoordinates();
+      const same = me.getAreaVisible() === (r.area || 0);
+      near = same && (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2 < 36 ? 1 : 0;
+    } catch (e) {}
+    break;
+  }
+  api.coop_set_partner(handle, near);
+}
+
 // ---- main loop ------------------------------------------------------------------------------------------
 log("[sa-coop] loaded");
 let started = false, announced = -1, lastCode = "", lastCodeCheck = 0;
@@ -765,6 +784,7 @@ while (true) {
   handleOwnHealth(me, now);
   writeMine(me);
   syncRemotes(me, api.coop_slot(), now);
+  tellPartner(me);
   drawNames();
   const slotNow = api.coop_slot();
   tellWorld(slotNow, now);

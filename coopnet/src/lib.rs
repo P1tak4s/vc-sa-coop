@@ -5,6 +5,7 @@
 mod dialog;
 mod overlay;
 mod saves;
+mod scripthook;
 mod steam;
 
 use proto::*;
@@ -506,6 +507,7 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
         std::thread::spawn(move || unsafe {
             // the "co-op" entry of the game's menus, then the menu drawn into the game (DX12, else DX11)
             overlay::hook_menu();
+            scripthook::install();
             let hinst = hudhook::windows::Win32::Foundation::HINSTANCE(module as isize);
             // one renderer only (both hook the same Present). DX12 hooks installed but never drew on 11-08, so DX11
             // is the default; %LOCALAPPDATA%\sa-de-coop renderer.txt
@@ -544,6 +546,19 @@ pub unsafe extern "C" fn coop_steam_join(name: *const u8, pw: *const u8) -> i64 
 #[no_mangle]
 pub extern "C" fn coop_my_skin() -> i64 {
     overlay::SKIN.load(std::sync::atomic::Ordering::SeqCst) as i64
+}
+
+pub(crate) fn is_host() -> bool {
+    shared().lock().unwrap().host
+}
+
+/// The partner's copy in our world (script handle, -1 = none) and whether it stands with us (same interior,
+/// a few metres): the host's mission start waits for it, and "either player" checks ask it too.
+#[no_mangle]
+pub extern "C" fn coop_set_partner(handle: i64, near: i64) -> i64 {
+    scripthook::PARTNER_PED.store(handle as i32, std::sync::atomic::Ordering::Relaxed);
+    scripthook::PARTNER_NEAR.store(near != 0, std::sync::atomic::Ordering::Relaxed);
+    1
 }
 
 /// 1 = we host the session (our story), 0 = we joined someone else's.
