@@ -160,10 +160,39 @@ function chauffeurKey(me) {
   } catch (e) { log(`[ai] H: ${e}`); }
 }
 
+// name tag over the partner's head (same drawing as the co-op script: the game's text, by key)
+try { FxtStore.insert("COOPAI", "AI partneris"); } catch (e) {}
+function toScreen(p) {
+  const cam = Camera.GetActiveCoordinates(), at = Camera.GetActivePointAt();
+  let fx = at.x - cam.x, fy = at.y - cam.y, fz = at.z - cam.z;
+  const fl = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+  let rx = fy, ry = -fx; const rl = Math.sqrt(rx * rx + ry * ry) || 1; rx /= rl; ry /= rl;
+  const ux = ry * fz, uy = -rx * fz, uz = rx * fy - ry * fx;
+  const dx = p.x - cam.x, dy = p.y - cam.y, dz = p.z - cam.z;
+  const depth = dx * fx + dy * fy + dz * fz;
+  if (depth < 1 || depth > 80) return null;
+  const tanX = Math.tan((Camera.GetFov() * Math.PI / 180) / 2), aspect = 16 / 9;
+  const sx = 320 + ((dx * rx + dy * ry) / depth / tanX) * 320;
+  const sy = 224 - ((dx * ux + dy * uy + dz * uz) / depth / (tanX / aspect)) * 224;
+  return sx < 0 || sx > 640 || sy < 0 || sy > 448 ? null : { x: sx, y: sy };
+}
+function drawTag() {
+  try {
+    if (!ped || !Char.DoesExist(ped) || ped.isInAnyCar()) return;
+    const h = ped.getCoordinates(); h.z += 1.1;
+    const at = toScreen(h);
+    if (!at) return;
+    Text.UseCommands(true); Text.SetFont(1); Text.SetScale(0.35, 1.4); Text.SetCenter(true);
+    Text.SetColor(140, 230, 140, 255); Text.SetDropshadow(1, 0, 0, 0, 255);
+    Text.Display(at.x, at.y, "COOPAI");
+  } catch (e) {}
+}
+
 log("[ai] ready");
 while (true) {
-  wait(100);
+  wait(0);
   if (!player.isPlaying()) continue;
+  drawTag();
   const me = player.getChar();
   if (!aiEnabled()) { if (ped) { despawn(); try { showTextBox("AI partneris isjungtas"); } catch (e) {} } continue; }
 
