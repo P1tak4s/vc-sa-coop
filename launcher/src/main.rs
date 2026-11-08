@@ -164,6 +164,18 @@ fn main() -> eframe::Result {
         let _ = std::fs::write(dir.join("valdymas.log"), line);
         return Ok(());
     }
+    // sa-coop.exe --uninstall sa|vc
+    if let Some(i) = args.iter().position(|a| a == "--uninstall") {
+        let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
+        let lines = match find_game(g) {
+            Some(dir) => uninstall(g, &dir),
+            None => vec![format!("{} nerastas", g.name)],
+        };
+        let dir = data_dir(g);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("uninstall.log"), lines.join("\n"));
+        return Ok(());
+    }
     // sa-coop.exe --reshade sa|vc 0|1
     if let Some(i) = args.iter().position(|a| a == "--reshade") {
         let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
@@ -461,6 +473,56 @@ fn set_reshade(win64: &Path, on: bool) -> Result<String, String> {
     copy_tree(&GAMES[0], &src.join("reshade-shaders"), &win64.join("reshade-shaders"), &mut log).map_err(|e| e.to_string())?;
     std::fs::copy(src.join("ReShade64.dll"), win64.join("dxgi.dll")).map_err(|e| e.to_string())?;
     Ok("ReShade įjungtas: Home atidaro jo meniu, Scroll Lock išjungia efektus".into())
+}
+
+/// Remove what install() put in: every file of the bundle (same relative path), our paks, our ReShade and our
+/// graphics settings. A file the player had before is left alone where we can tell (version.dll, dxgi.dll).
+fn uninstall(g: &GameInfo, win64: &Path) -> Vec<String> {
+    let mut log = vec![];
+    fn walk(g: &GameInfo, from: &Path, to: &Path, n: &mut usize) {
+        let Ok(rd) = std::fs::read_dir(from) else { return };
+        for e in rd.flatten() {
+            let (src, dst) = (e.path(), to.join(e.file_name()));
+            if src.is_dir() {
+                walk(g, &src, &dst, n);
+                let _ = std::fs::remove_dir(&dst); // only when empty
+            } else if belongs(g, &e.file_name().to_string_lossy()) && dst.is_file() {
+                if e.file_name() == "version.dll" && std::fs::read(&dst).ok() != std::fs::read(&src).ok() {
+                    continue; // another mod's loader now: not ours to delete
+                }
+                if std::fs::remove_file(&dst).is_ok() {
+                    *n += 1;
+                }
+            }
+        }
+    }
+    let mut n = 0;
+    walk(g, &bundle_dir(), win64, &mut n);
+    let backup = win64.join("version.dll.sa-coop-backup");
+    if backup.is_file() && !win64.join("version.dll").exists() {
+        let _ = std::fs::rename(&backup, win64.join("version.dll"));
+        log.push("Grąžintas ankstesnis version.dll".into());
+    }
+    log.push(format!("Pašalinta failų: {n}"));
+    if reshade_on(win64) == Some(true) {
+        let _ = set_reshade(win64, false);
+        let _ = std::fs::remove_dir_all(win64.join("reshade-shaders"));
+        let _ = std::fs::remove_file(win64.join("ReShade.ini"));
+        log.push("ReShade pašalintas".into());
+    }
+    if let Some(mods) = win64.parent().and_then(|p| p.parent()).map(|p| p.join(r"Content\Paks\~mods")) {
+        for pak in ["coop_P.pak", "coop_handling_P.pak"] {
+            if std::fs::remove_file(mods.join(pak)).is_ok() {
+                log.push(format!("Pašalinta {pak}"));
+            }
+        }
+        let _ = std::fs::remove_dir(&mods);
+    }
+    if graphics_level(g).is_some() {
+        let _ = set_graphics(g, 0);
+        log.push("Grafikos nustatymai grąžinti".into());
+    }
+    log
 }
 
 fn installed(g: &GameInfo, game: &Path) -> bool {
