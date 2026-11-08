@@ -725,10 +725,51 @@ function tellWorld(mySlot, t) {
     if (w !== lastWeatherSent && w >= 0 && w < 7) { lastWeatherSent = w; sendEvent(EV.WEATHER, String(w)); }
   }
   const m = missionName();
-  if (m !== missionWas) { missionWas = m; sendEvent(EV.MISSION, m); }
+  if (m !== missionWas) {
+    // a mission of ours started: remember where (the marker); it ended without a pass: offer the co-op retry
+    if (m && !missionWas && !isGuest()) {
+      try { retry.at = player.getChar().getCoordinates(); retry.passed = S.lastPassed ? readStr(S.lastPassed, 8, true) : ""; } catch (e) {}
+      retry.name = m; retry.until = 0;
+    }
+    if (!m && missionWas && !isGuest() && retry.at && retry.name === missionWas) {
+      const passed = S.lastPassed && readStr(S.lastPassed, 8, true) !== retry.passed;
+      if (!passed) { retry.until = t + 15000; say("VC Co-op: misija nepavyko. R - kartoti kartu su draugu (15 s)"); }
+    }
+    missionWas = m; sendEvent(EV.MISSION, m);
+  }
   const cut = cutsceneNow();
   if (cut && !cutWas) sendEvent(EV.CUTSCENE, cut);
   cutWas = !!cut;
+}
+
+// ---- co-op retry: after a failed mission the host presses R, both go back to where the mission began ------------
+const retry = { at: null, name: "", passed: "", until: 0 };
+const EV_RETRY = 10;
+
+function retryTick(me, t) {
+  if (!retry.until) return;
+  if (t > retry.until || onMission()) { retry.until = 0; return; }
+  if (!pressed(82)) return; // R
+  retry.until = 0;
+  const p = retry.at;
+  try {
+    if (me.isInAnyCar()) me.warpFromCarToCoord(p.x, p.y, p.z);
+    else { me.setCoordinates(p.x, p.y, p.z); placeAt(pedPtr(me), p.x, p.y, p.z); }
+    sendEvent(EV_RETRY, `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}`);
+    say(`VC Co-op: kartojam ${retry.name}`);
+  } catch (e) { noteError(`retry: ${e}`); }
+}
+
+// a friend retries its mission: come to it (a little to the side of the marker)
+function onRetry(text, me) {
+  const [x, y, z] = text.split(",").map(Number);
+  if (![x, y, z].every(Number.isFinite)) return;
+  try {
+    if (riding) stopRiding(me);
+    if (me.isInAnyCar()) me.warpFromCarToCoord(x + 2, y, z);
+    else { me.setCoordinates(x + 2, y, z); placeAt(pedPtr(me), x + 2, y, z); }
+    say("VC Co-op: draugas kartoja misija, tu salia jo");
+  } catch (e) { noteError(`retry here: ${e}`); }
 }
 
 function cutsceneNow() {
@@ -740,6 +781,7 @@ function hearWorld() {
   while ((kind = api.coop_event_poll(evBuf)) > 0) {
     const text = readStr(evBuf, 127, false);
     if (kind === EV.WEATHER) { heard.weather = text; const w = parseInt(text, 10); if (w >= 0 && w < 7) try { Weather.ForceNow(w); } catch (e) {} }
+    else if (kind === EV_RETRY) onRetry(text, player.getChar());
     else if (kind === EV.CUTSCENE) { heard.cut = text; say(`VC Co-op: draugas ziuri pjuvi (${text})`); }
     else if (kind === 4 || kind === 5) onMissionEvent(kind, text);
     else if (kind === 6 || kind === 7) onStoryEvent(kind, text);
@@ -1038,6 +1080,7 @@ while (true) {
   trace("events"); hearWorld();
   trace("missions"); missionsTick(t);
   trace("report"); report(me, t);
+  retryTick(me, t);
   trace("done"); tracedTicks++;
   if (riding && (!carExists(riding.car) || downed)) stopRiding(me);
   if (pressed(KEY.G) && !riding) tryRideAlong(me);
