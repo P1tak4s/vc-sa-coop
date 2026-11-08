@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub static OPEN: AtomicBool = AtomicBool::new(false);
 
 pub fn toggle() {
-    OPEN.fetch_xor(true, Ordering::SeqCst);
+    let was = OPEN.fetch_xor(true, Ordering::SeqCst);
+    crate::log_line(&format!("F9: co-op menu {}", if was { "closed" } else { "opened" }));
 }
 
 #[derive(Default)]
@@ -60,6 +61,9 @@ impl ImguiRenderLoop for CoopMenu {
     }
 
     fn render(&mut self, ui: &mut Ui) {
+        if !RENDERED.swap(true, Ordering::SeqCst) {
+            crate::log_line("overlay: first frame drawn");
+        }
         if !OPEN.load(Ordering::SeqCst) {
             return;
         }
@@ -129,6 +133,8 @@ static mut CFS_FN: usize = 0; // the CustomFunctionFromString UFunction once see
 static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 static mut LAST_IDX: i32 = -1;
 static mut MAX_IDX: i32 = -1;
+static mut MENU_IS_MAIN: bool = false;
+static RENDERED: AtomicBool = AtomicBool::new(false);
 
 fn log_once(text: &str) {
     let mut l = LOGGED.lock().unwrap();
@@ -188,13 +194,17 @@ unsafe extern "system" fn detour(this: *mut u8, func: *mut u8, parms: *mut u8) {
                 // the hovered/used entry's position in the visible list; co-op is always next to last (before exit)
                 let idx = *(parms as *const i32);
                 LAST_IDX = idx;
+                MENU_IS_MAIN = class_of(this) == "UI_MainMenu_C";
+                crate::log_line(&format!("InteractedButton idx={idx}"));
                 if idx > MAX_IDX { MAX_IDX = idx; }
                 log_once(&format!("InteractedButton on {} (outer {})", class_of(this), outer_of(this)));
             } else if name.contains("OnButtonClickedEvent") && !this.is_null() {
                 let (li, mi) = (LAST_IDX, MAX_IDX);
                 crate::log_line(&format!("click on {} idx={li} max={mi}", class_of(this)));
-                if MAX_IDX >= 2 && LAST_IDX == MAX_IDX - 1 {
+                // measured 11-08: the title menu's co-op entry reports index 2 (the numbering skips hidden entries)
+                if MENU_IS_MAIN && li == 2 {
                     OPEN.store(true, Ordering::SeqCst);
+                    crate::log_line("co-op entry: opening the co-op menu");
                 }
             } else if name.contains("Click") || name.contains("Press") || name.contains("Button") || name.contains("Selected") {
                 // first run: learn which menu events go through here (coopnet.log), so we can catch the click
