@@ -276,6 +276,7 @@ dependencies = [
  "clipboard-win",
  "proto",
  "relay",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

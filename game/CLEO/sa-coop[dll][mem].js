@@ -1,16 +1,16 @@
 /// <reference path=".config/sa.d.ts" />
-// SA Co-op: your friend in your world. Keys in game:
-//   F9  host a game here (the code goes to your clipboard)    F10 join with a code from the clipboard
-//   G   sit next to your friend in their car                    E   revive your friend when they are down
-// Talks to coopnet64.dll (next to SanAndreas.exe). Each world keeps its own traffic and missions for now.
+// SA Co-op: your friend in your world. Keys:
+//   F9  the co-op window (session name + password, through Steam), from the title screen on
+//   G   sit next to your friend in their car      E   revive your friend when they are down
+// Talks to coopnet64.asi (next to SanAndreas.exe; the ASI loader starts it with the game, we use the same copy).
 
 // ---- the DLL -------------------------------------------------------------------------------------------
 let lib;
-for (const path of ["coopnet64.dll", "../coopnet64.dll"]) {
+for (const path of ["coopnet64.asi", "../coopnet64.asi"]) {
   lib = DynamicLibrary.Load(path);
   if (lib) break;
 }
-if (!lib) { log("[sa-coop] coopnet64.dll not found"); exit("coopnet64.dll not found"); }
+if (!lib) { log("[sa-coop] coopnet64.asi not found"); exit("coopnet64.asi not found"); }
 
 const api = {};
 try {
@@ -32,7 +32,7 @@ const theirs = Memory.Allocate(SIZE);
 const codeBuf = Memory.Allocate(32);
 const nameBuf = Memory.Allocate(32);
 
-const KEY = { F9: 120, F10: 121, G: 71, E: 69 };
+const KEY = { G: 71, E: 69 };
 const SKINS = [105, 106, 107, 105]; // Grove Street looks until we sync clothes
 const DOWN_AT = 20;                 // health below this: down instead of dead (while a friend is here)
 const BLEED_OUT = 60000;            // ms down before the game takes over
@@ -378,16 +378,8 @@ while (true) {
 
   if (!started) {
     started = true;
-    if (!api.coop_start()) say("SA Co-op: F9 - kurti zaidima, F10 - prisijungti (kodas is iskarpines)");
-  }
-
-  if (pressed(KEY.F9)) {
-    if (api.coop_host()) say("SA Co-op: zaidimas sukurtas, kodas kopijuojamas...");
-    else say("SA Co-op: nepavyko atidaryti 7790 prievado");
-  }
-  if (pressed(KEY.F10)) {
-    if (api.coop_join_clipboard()) say("SA Co-op: jungiamasi...");
-    else say("SA Co-op: iskarpineje nera kodo. Nukopijuok drauga koda ir spausk F10");
+    // a launcher session (IP mode) if there is one; otherwise the F9 window decides
+    if (!api.coop_start() && api.coop_status() !== 2) say("SA Co-op: F9 - co-op langas (pavadinimas ir slaptazodis)");
   }
   if (now - lastCodeCheck > 1000) {
     lastCodeCheck = now;

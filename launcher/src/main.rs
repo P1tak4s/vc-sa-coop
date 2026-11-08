@@ -64,17 +64,21 @@ fn copy_tree(from: &Path, to: &Path, log: &mut Vec<String>) -> std::io::Result<(
 
 fn install(game: &Path) -> Result<Vec<String>, String> {
     let src = bundle_dir();
-    if !src.join("coopnet64.dll").is_file() {
+    if !src.join("coopnet64.asi").is_file() {
         return Err(format!("Nerastas modo paketas: {}", src.display()));
     }
     let mut log = vec![];
     copy_tree(&src, game, &mut log).map_err(|e| format!("Nepavyko nukopijuoti: {e}"))?;
+    // files of older versions: a second copy of the DLL would run its own, separate network
+    for old in ["coopnet64.dll", r"CLEO\sa-coop.js", r"CLEO\coop-test.js"] {
+        let _ = std::fs::remove_file(game.join(old));
+    }
     log.push("Modas įdiegtas.".into());
     Ok(log)
 }
 
 fn installed(game: &Path) -> bool {
-    ["version.dll", "cleo_redux64.asi", "coopnet64.dll", r"CLEO\sa-coop[dll][mem].js"].iter().all(|f| game.join(f).is_file())
+    ["version.dll", "cleo_redux64.asi", "coopnet64.asi", r"CLEO\sa-coop[dll][mem].js"].iter().all(|f| game.join(f).is_file())
 }
 
 // ---- session file the game's DLL reads --------------------------------------------------------------------

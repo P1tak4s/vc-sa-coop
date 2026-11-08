@@ -2,6 +2,7 @@
 //! Only integers cross the boundary: states go through memory the script allocates (layout = proto::State).
 //! The network runs on its own thread, so a slow or lost packet never stalls the game.
 
+mod dialog;
 mod steam;
 
 use proto::*;
@@ -349,6 +350,24 @@ fn start_steam(host: bool, name: String, pw: String) -> i64 {
     s.stop = false;
     drop(s);
     std::thread::spawn(move || steam_thread(host, name, pw));
+    1
+}
+
+pub(crate) fn status_code() -> i32 {
+    shared().lock().unwrap().status
+}
+
+pub(crate) fn start_steam_session(host: bool, name: String, pw: String) -> i64 {
+    start_steam(host, name, pw)
+}
+
+/// Loaded by the ASI loader at game start (as coopnet64.asi): watch F9 for the co-op window from the title screen on.
+#[no_mangle]
+pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _reserved: *mut std::ffi::c_void) -> i32 {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if reason == 1 && !STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        std::thread::spawn(dialog::hotkey_thread);
+    }
     1
 }
 
