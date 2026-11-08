@@ -110,6 +110,43 @@ function keepUp(me, now) {
   } catch (e) { log(`[ai] keep up: ${e}`); }
 }
 
+// H: the partner drives. Near an empty car (your stolen one, any): it takes the wheel, you the passenger seat, and
+// it cruises the streets. H again: it stops and you both get out.
+let chauffeur = null, hWas = false;
+function chauffeurKey(me) {
+  const down = Pad.IsKeyPressed(72); // H
+  const press = down && !hWas;
+  hWas = down;
+  if (!press || !ped) return;
+  try {
+    if (chauffeur) {
+      const c = chauffeur.getCoordinates();
+      chauffeur.setCruiseSpeed(0);
+      chauffeur.setMission(11); // stop for good
+      wait(800);
+      if (me.isInAnyCar()) me.warpFromCarToCoord(c.x + 2.5, c.y, c.z);
+      if (ped.isInAnyCar()) ped.warpFromCarToCoord(c.x - 2.5, c.y, c.z);
+      chauffeur = null;
+      action = "follow";
+      showTextBox("AI: sustoju");
+      return;
+    }
+    const p = me.getCoordinates();
+    const car = me.isInAnyCar() ? me.storeCarIsInNoSave() : World.GetRandomCarInSphereNoSave(p.x, p.y, p.z, 8, -1);
+    if (!car || +car <= 0) { showTextBox("Prieik prie masinos (iki 8 m) ir spausk H"); return; }
+    if (me.isInAnyCar()) me.warpFromCarToCoord(p.x + 2, p.y, p.z);
+    if (ped.isInAnyCar()) { const q = ped.getCoordinates(); ped.warpFromCarToCoord(q.x, q.y, q.z); }
+    ped.warpIntoCar(car);
+    me.warpIntoCarAsPassenger(car, 0);
+    car.setCruiseSpeed(22);
+    car.setDrivingStyle(2); // keeps to the road
+    car.wanderRandomly();
+    chauffeur = car;
+    action = "drive";
+    showTextBox("AI: vairuoju. H - sustoti");
+  } catch (e) { log(`[ai] H: ${e}`); }
+}
+
 log("[ai] ready");
 while (true) {
   wait(100);
@@ -123,6 +160,8 @@ while (true) {
     despawn(); deadAt = 0;
   }
   if (!ped) { spawn(me); continue; }
+  chauffeurKey(me);
+  if (chauffeur) { if (!Car.DoesExist(chauffeur) || !me.isInAnyCar()) { chauffeur = null; action = "follow"; } continue; }
   // too far behind (e.g. CJ drove off alone): catch up next to CJ
   if (!me.isInAnyCar() && d2(me.getCoordinates(), ped.getCoordinates()) > 150 * 150) {
     const p = me.getCoordinates(); ped.setCoordinates(p.x + 2, p.y + 2, p.z);
