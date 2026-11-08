@@ -447,7 +447,8 @@ function tryRideAlong(me) {
     const d = dist2(p, r.car.getCoordinates());
     if (d < bestD) { best = r; bestD = d; }
   }
-  if (best) Task.EnterCarAsPassenger(me, best.car, 10000, 0);
+  // straight into the seat: the friend's car is moved every frame, which breaks the walk-in animation (CJ hung)
+  if (best) { try { me.warpIntoCarAsPassenger(best.car, 0); } catch (e) { log(`[sa-coop] G: ${e}`); } }
 }
 
 // ---- shared world: weather, cutscenes, missions (addresses for Steam build 1.0.113.49697469) ------------
