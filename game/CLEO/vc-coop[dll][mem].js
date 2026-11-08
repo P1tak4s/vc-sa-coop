@@ -444,6 +444,24 @@ function rideRemote(r, s, mySlot, me) {
   if (r.attached && r.attached !== +car) { detachExtra(r.ped); r.attached = 0; }
   if (r.attached || r.ped.isInAnyCar() || now() - (r.lastWarp || 0) < 1000) return;
   r.lastWarp = now();
+  // our own car: recreate the copy with the game's CREATE_CHAR_AS_PASSENGER (the memory warp left the driver,
+  // you, unable to drive, 11-08)
+  if (s.carHealth !== 2 && driverSlot === mySlot && seatFree(car)) {
+    try {
+      const pp = pedPtr(r.ped), model = pp ? Memory.ReadI16(pp + S.modelIndex, false, false) : SKINS[0];
+      if (modelReady(model)) {
+        try { r.blip.remove(); } catch (e) {}
+        r.ped.delete();
+        r.ped = Char.CreateAsPassenger(car, 4, model, 0);
+        r.ped.setProofs(true, true, true, true, true);
+        r.ped.setCantBeDraggedOut(true);
+        r.blip = Blip.AddForChar(r.ped);
+        try { r.blip.changeDisplay(2); } catch (e) {}
+        r.weapon = -1;
+      }
+    } catch (e) { noteError(`passenger create: ${e}`); }
+    return;
+  }
   // they said "extra seat" (2), or the car has no free seat here: on the trunk / the back of the bike
   if (s.carHealth === 2 || !api.coop_warp_passenger(+r.ped, +car)) {
     try { attachExtra(r.ped, car, s.weapon); r.attached = +car; } catch (e) { noteError(`extra seat: ${e}`); }
@@ -451,6 +469,10 @@ function rideRemote(r, s, mySlot, me) {
 }
 
 function now() { return Date.now(); }
+
+function seatFree(car) {
+  try { return car.isPassengerSeatFree(0) || car.isPassengerSeatFree(1) || car.isPassengerSeatFree(2); } catch (e) { return false; }
+}
 
 // ---- an extra seat: the trunk of a full car, or the back of a bike that already carries two -------------------
 // ATTACH_CHAR_TO_CAR keeps the ped on the car at an offset and lets it shoot within an arc (like VC's own missions).
