@@ -1,7 +1,7 @@
 ﻿// MenuPatch: adds a "co-op" entry (FunctionToCallOnPress "COOP") before "exit"
-// in GTA SA DE menu templates. Reads extracted originals, writes copies to work/.
+// in GTA SA DE / VC DE menu templates. Reads extracted originals, writes copies to work/.
 // Usage: MenuPatch dump <file.uasset>
-//        MenuPatch patch <srcRoot> <dstRoot>   (roots contain Gameface/...)
+//        MenuPatch patch <srcRoot> <dstRoot> [<rel> <mainMenu> <pauseMenu>]   (roots contain Gameface/...; SA by default)
 using UAssetAPI;
 using UAssetAPI.ExportTypes;
 using UAssetAPI.PropertyTypes.Objects;
@@ -9,8 +9,9 @@ using UAssetAPI.UnrealTypes;
 
 static class Program
 {
-    const string Rel = "Gameface/Content/SanAndreas/UI/MenuTemplates";
-    static readonly string[] Menus = { "GTASA_MainMenu", "GTASA_PauseMenu" };
+    // SA by default; VC: Gameface/Content/ViceCity/UI/MenuTemplates GTAVC_MainMenu GTAVC_PauseMenu
+    static string Rel = "Gameface/Content/SanAndreas/UI/MenuTemplates";
+    static string[] Menus = { "GTASA_MainMenu", "GTASA_PauseMenu" };
 
     static int Main(string[] a)
     {
@@ -18,6 +19,7 @@ static class Program
         if (a.Length >= 3 && a[0] == "roundtrip") { new UAsset(a[1], EngineVersion.VER_UE4_26).Write(a[2]); return 0; }
         if (a.Length >= 3 && a[0] == "patch")
         {
+            if (a.Length >= 6) { Rel = a[3]; Menus = new[] { a[4], a[5] }; }
             foreach (var m in Menus)
             {
                 var src = Path.Combine(a[1], Rel, m + ".uasset");

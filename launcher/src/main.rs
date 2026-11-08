@@ -1,4 +1,4 @@
-//! sa-coop.exe: install the mod into GTA San Andreas The Definitive Edition, host a game (the server runs here)
+//! sa-coop.exe: install the mod into GTA San Andreas or Vice City The Definitive Edition, host a game (the server runs here)
 //! or join one with a code, then start the game through Steam. Like Saints Row 2: everything before the game starts.
 #![windows_subsystem = "windows"]
 
@@ -10,21 +10,80 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-const STEAM_APP: &str = "steam://rungameid/1547000";
-const GAME_SUBDIR: &str = r"steamapps\common\GTA San Andreas - The Definitive Edition\Gameface\Binaries\Win64";
+/// What differs between the two games for the launcher.
+struct GameInfo {
+    name: &'static str,
+    steam: &'static str,
+    subdir: &'static str,
+    exe: &'static str,
+    /// %LOCALAPPDATA%\<data>: session file, fonts (the DLL reads the same folder, see coopnet/src/game.rs)
+    data: &'static str,
+    /// Documents\Rockstar Games\<docs>
+    docs: &'static str,
+    menu_rel: &'static str,
+    menus: [&'static str; 2],
+    /// the game's own co-op script
+    script: &'static str,
+}
+
+const GAMES: [GameInfo; 2] = [
+    GameInfo {
+        name: "GTA San Andreas – The Definitive Edition",
+        steam: "steam://rungameid/1547000",
+        subdir: r"steamapps\common\GTA San Andreas - The Definitive Edition\Gameface\Binaries\Win64",
+        exe: "SanAndreas.exe",
+        data: "sa-de-coop",
+        docs: "GTA San Andreas Definitive Edition",
+        menu_rel: "Gameface/Content/SanAndreas/UI/MenuTemplates",
+        menus: ["GTASA_MainMenu", "GTASA_PauseMenu"],
+        script: r"CLEO\sa-coop[dll][mem].js",
+    },
+    GameInfo {
+        name: "GTA Vice City – The Definitive Edition",
+        steam: "steam://rungameid/1546990",
+        subdir: r"steamapps\common\GTA Vice City - The Definitive Edition\Gameface\Binaries\Win64",
+        exe: "ViceCity.exe",
+        data: "vc-de-coop",
+        docs: "GTA Vice City Definitive Edition",
+        menu_rel: "Gameface/Content/ViceCity/UI/MenuTemplates",
+        menus: ["GTAVC_MainMenu", "GTAVC_PauseMenu"],
+        script: r"CLEO\vc-coop[dll][mem].js",
+    },
+];
+
+fn is_vc(g: &GameInfo) -> bool {
+    g.exe == "ViceCity.exe"
+}
+
+/// CLEO runs every script in its folder: Vice City gets only the vc-*.js scripts, San Andreas all the others.
+fn belongs(g: &GameInfo, file: &str) -> bool {
+    !file.ends_with(".js") || file.starts_with("vc-") == is_vc(g)
+}
+
+fn data_dir(g: &GameInfo) -> PathBuf {
+    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join(g.data)
+}
+
+/// Documents may be redirected to OneDrive (VC's folder was, 11-08)
+fn docs_dir(g: &GameInfo) -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("USERPROFILE")?);
+    let rel = PathBuf::from("Rockstar Games").join(g.docs);
+    let found = ["Documents", r"OneDrive\Documents"].iter().map(|d| home.join(d).join(&rel)).find(|p| p.is_dir());
+    Some(found.unwrap_or_else(|| home.join("Documents").join(rel)))
+}
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([460.0, 520.0]).with_resizable(false),
         ..Default::default()
     };
-    eframe::run_native("SA Co-op", options, Box::new(|_| Ok(Box::new(App::new()))))
+    eframe::run_native("SA / VC Co-op", options, Box::new(|_| Ok(Box::new(App::new()))))
 }
 
 // ---- game folder and install ---------------------------------------------------------------------------
 
 /// Every Steam library from libraryfolders.vdf, checked for the game's exe.
-fn find_game() -> Option<PathBuf> {
+fn find_game(g: &GameInfo) -> Option<PathBuf> {
     let steam = PathBuf::from(r"C:\Program Files (x86)\Steam");
     let mut libs = vec![steam.clone()];
     if let Ok(vdf) = std::fs::read_to_string(steam.join(r"steamapps\libraryfolders.vdf")) {
@@ -35,21 +94,23 @@ fn find_game() -> Option<PathBuf> {
             }
         }
     }
-    libs.into_iter().map(|l| l.join(GAME_SUBDIR)).find(|p| p.join("SanAndreas.exe").is_file())
+    libs.into_iter().map(|l| l.join(g.subdir)).find(|p| p.join(g.exe).is_file())
 }
 
-/// The files to put next to SanAndreas.exe live in `game\` beside this exe (same layout).
+/// The files to put next to the game's exe live in `game\` beside this exe (same layout).
 fn bundle_dir() -> PathBuf {
     std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("game"))).unwrap_or_else(|| PathBuf::from("game"))
 }
 
-fn copy_tree(from: &Path, to: &Path, log: &mut Vec<String>) -> std::io::Result<()> {
+fn copy_tree(g: &GameInfo, from: &Path, to: &Path, log: &mut Vec<String>) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let dst = to.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            copy_tree(&entry.path(), &dst, log)?;
+            copy_tree(g, &entry.path(), &dst, log)?;
+        } else if !belongs(g, &entry.file_name().to_string_lossy()) {
+            continue;
         } else {
             // another mod's ASI loader under the same name: keep a copy instead of losing it
             if entry.file_name() == "version.dll" && dst.is_file() && std::fs::read(&dst)? != std::fs::read(entry.path())? {
@@ -62,48 +123,49 @@ fn copy_tree(from: &Path, to: &Path, log: &mut Vec<String>) -> std::io::Result<(
     Ok(())
 }
 
-fn install(game: &Path) -> Result<Vec<String>, String> {
+fn install(g: &GameInfo, game: &Path) -> Result<Vec<String>, String> {
     let src = bundle_dir();
     if !src.join("coopnet64.asi").is_file() {
         return Err(format!("Nerastas modo paketas: {}", src.display()));
     }
     let mut log = vec![];
-    copy_tree(&src, game, &mut log).map_err(|e| format!("Nepavyko nukopijuoti: {e}"))?;
+    copy_tree(g, &src, game, &mut log).map_err(|e| format!("Nepavyko nukopijuoti: {e}"))?;
     // files of older versions: a second copy of the DLL would run its own, separate network
     for old in ["coopnet64.dll", r"CLEO\sa-coop.js", r"CLEO\coop-test.js", r"CLEO\mano-masina.js"] {
         let _ = std::fs::remove_file(game.join(old));
     }
     log.push("Modas įdiegtas.".into());
-    extras(game, &mut log);
+    extras(g, game, &mut log);
     Ok(log)
 }
 
 /// The co-op entry for the game's menus, made on this PC from this PC's own game files: the two menu templates come
 /// out of pakchunk0 (repak), MenuPatch adds "co-op" (FunctionToCallOnPress = COOP), repak packs them as a mod pak.
-fn build_menu_pak(extra: &Path, gameface: &Path, mods: &Path) -> Result<(), String> {
+fn build_menu_pak(g: &GameInfo, extra: &Path, gameface: &Path, mods: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
-    const REL: &str = "Gameface/Content/SanAndreas/UI/MenuTemplates";
+    let rel = g.menu_rel;
     let (repak, patch) = (extra.join("repak.exe"), extra.join("MenuPatch.exe"));
     if !repak.is_file() || !patch.is_file() {
         return Err("trūksta repak.exe arba MenuPatch.exe".into());
     }
     let pak = gameface.join(r"Content\Paks\pakchunk0-WindowsNoEditor.pak");
-    let tmp = std::env::temp_dir().join("sa-coop-menu");
+    let tmp = std::env::temp_dir().join(format!("{}-menu", g.data));
     let _ = std::fs::remove_dir_all(&tmp);
     let (src, dst) = (tmp.join("src"), tmp.join("dst"));
-    std::fs::create_dir_all(src.join(REL)).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(src.join(rel)).map_err(|e| e.to_string())?;
     let run = |exe: &Path, args: &[&std::ffi::OsStr]| -> Result<Vec<u8>, String> {
         let o = std::process::Command::new(exe).args(args).creation_flags(0x0800_0000).output().map_err(|e| e.to_string())?;
         if o.status.success() { Ok(o.stdout) } else { Err(String::from_utf8_lossy(&o.stderr).trim().to_string()) }
     };
-    for m in ["GTASA_MainMenu", "GTASA_PauseMenu"] {
+    for m in g.menus {
         for ext in ["uasset", "uexp"] {
-            let inner = format!("{REL}/{m}.{ext}");
+            let inner = format!("{rel}/{m}.{ext}");
             let bytes = run(&repak, &["get".as_ref(), pak.as_os_str(), inner.as_ref()])?;
-            std::fs::write(src.join(REL).join(format!("{m}.{ext}")), bytes).map_err(|e| e.to_string())?;
+            std::fs::write(src.join(rel).join(format!("{m}.{ext}")), bytes).map_err(|e| e.to_string())?;
         }
     }
-    run(&patch, &["patch".as_ref(), src.as_os_str(), dst.as_os_str()])?;
+    let (rel_arg, m0, m1) = (std::ffi::OsString::from(rel), std::ffi::OsString::from(g.menus[0]), std::ffi::OsString::from(g.menus[1]));
+    run(&patch, &["patch".as_ref(), src.as_os_str(), dst.as_os_str(), &rel_arg, &m0, &m1])?;
     let out = tmp.join("coop_P.pak");
     run(&repak, &["pack".as_ref(), "--version".as_ref(), "V11".as_ref(), "--mount-point".as_ref(), "../../../".as_ref(), dst.as_os_str(), out.as_os_str()])?;
     std::fs::create_dir_all(mods).map_err(|e| e.to_string())?;
@@ -115,21 +177,21 @@ fn build_menu_pak(extra: &Path, gameface: &Path, mods: &Path) -> Result<(), Stri
 /// Beside `game\`: `extra\coop_P.pak` (the co-op entry in the game's menus), `extra\Engine.ini` (sharper, further
 /// graphics; only if the player has none) and `extra\repak.exe`, which takes the menu fonts out of this PC's own
 /// copy of the game (they are never shipped with the mod).
-fn extras(win64: &Path, log: &mut Vec<String>) {
+fn extras(g: &GameInfo, win64: &Path, log: &mut Vec<String>) {
     let extra = bundle_dir().with_file_name("extra");
     let Some(gameface) = win64.parent().and_then(|p| p.parent()) else { return };
     let mods = gameface.join(r"Content\Paks\~mods");
-    match build_menu_pak(&extra, gameface, &mods) {
+    match build_menu_pak(g, &extra, gameface, &mods) {
         Ok(()) => log.push("„co-op“ įrašas meniu įdiegtas.".into()),
         Err(e) => log.push(format!("„co-op“ meniu įrašo nepavyko sukurti: {e}")),
     }
-    if let Some(docs) = std::env::var_os("USERPROFILE").map(|u| PathBuf::from(u).join(r"Documents\Rockstar Games\GTA San Andreas Definitive Edition\Config\WindowsNoEditor")) {
+    if let Some(docs) = docs_dir(g).map(|d| d.join(r"Config\WindowsNoEditor")) {
         let ini = docs.join("Engine.ini");
         if !ini.exists() && extra.join("Engine.ini").is_file() && std::fs::create_dir_all(&docs).is_ok() && std::fs::copy(extra.join("Engine.ini"), &ini).is_ok() {
             log.push("Grafikos patobulinimai įjungti (Engine.ini).".into());
         }
     }
-    let fonts = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join(r"sa-de-coop\fonts");
+    let fonts = data_dir(g).join("fonts");
     let pak = gameface.join(r"Content\Paks\pakchunk0-WindowsNoEditor.pak");
     if extra.join("repak.exe").is_file() && std::fs::create_dir_all(&fonts).is_ok() {
         use std::os::windows::process::CommandExt;
@@ -149,21 +211,21 @@ fn extras(win64: &Path, log: &mut Vec<String>) {
     }
 }
 
-fn installed(game: &Path) -> bool {
-    ["version.dll", "cleo_redux64.asi", "coopnet64.asi", r"CLEO\sa-coop[dll][mem].js"].iter().all(|f| game.join(f).is_file())
+fn installed(g: &GameInfo, game: &Path) -> bool {
+    ["version.dll", "cleo_redux64.asi", "coopnet64.asi", g.script].iter().all(|f| game.join(f).is_file())
 }
 
 // ---- session file the game's DLL reads --------------------------------------------------------------------
 
-fn write_session(server: SocketAddr, key: u32, nick: &str) -> std::io::Result<()> {
-    let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("sa-de-coop");
+fn write_session(g: &GameInfo, server: SocketAddr, key: u32, nick: &str) -> std::io::Result<()> {
+    let dir = data_dir(g);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("session.txt"), format!("server={server}\nkey={key:08x}\nnick={nick}\n"))
 }
 
-fn start_game() {
+fn start_game(g: &GameInfo) {
     use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("cmd").args(["/C", "start", "", STEAM_APP]).creation_flags(0x0800_0000).spawn();
+    let _ = std::process::Command::new("cmd").args(["/C", "start", "", g.steam]).creation_flags(0x0800_0000).spawn();
 }
 
 // ---- UI -------------------------------------------------------------------------------------------------
@@ -181,7 +243,8 @@ struct Hosting {
 }
 
 struct App {
-    game: Option<PathBuf>,
+    which: usize,
+    games: [Option<PathBuf>; 2],
     nick: String,
     tab: Tab,
     code: String,
@@ -191,7 +254,10 @@ struct App {
 
 impl App {
     fn new() -> App {
-        App { game: find_game(), nick: "Žaidėjas".into(), tab: Tab::Host, code: String::new(), hosting: None, msg: vec![] }
+        let games = [find_game(&GAMES[0]), find_game(&GAMES[1])];
+        // Vice City first when only Vice City is there
+        let which = if games[0].is_none() && games[1].is_some() { 1 } else { 0 };
+        App { which, games, nick: "Žaidėjas".into(), tab: Tab::Host, code: String::new(), hosting: None, msg: vec![] }
     }
 
     fn host(&mut self) {
@@ -208,7 +274,7 @@ impl App {
         if internet_code.is_none() {
             self.msg.push(format!("Maršrutizatorius neatidarė prievado (UPnP). Draugui per internetą atidaryk UDP {DEFAULT_PORT} ranka."));
         }
-        if let Err(e) = write_session(SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)), key, &self.nick) {
+        if let Err(e) = write_session(&GAMES[self.which], SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)), key, &self.nick) {
             self.msg.push(format!("Nepavyko įrašyti sesijos: {e}"));
         }
         self.hosting = Some(Hosting { internet_code, lan_code, players });
@@ -219,7 +285,7 @@ impl App {
             self.msg.push("Kodas neteisingas: jame turi būti 16 simbolių.".into());
             return false;
         };
-        match write_session(SocketAddr::from((ip, port)), key, &self.nick) {
+        match write_session(&GAMES[self.which], SocketAddr::from((ip, port)), key, &self.nick) {
             Ok(()) => true,
             Err(e) => {
                 self.msg.push(format!("Nepavyko įrašyti sesijos: {e}"));
@@ -233,23 +299,28 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(500));
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("SA Co-op");
-            ui.label("GTA San Andreas – The Definitive Edition");
+            ui.heading("SA / VC Co-op");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.which, 0, "San Andreas");
+                ui.selectable_value(&mut self.which, 1, "Vice City");
+            });
+            let g = &GAMES[self.which];
+            ui.label(g.name);
             ui.separator();
 
-            match self.game.clone() {
+            match self.games[self.which].clone() {
                 None => {
                     ui.colored_label(egui::Color32::RED, "Žaidimas nerastas Steam bibliotekose.");
                     return;
                 }
                 Some(game) => {
-                    if installed(&game) {
+                    if installed(g, &game) {
                         ui.label("✔ Modas įdiegtas");
                     } else {
                         ui.label("Modas dar neįdiegtas.");
                     }
                     if ui.button("Įdiegti / atnaujinti modą").clicked() {
-                        match install(&game) {
+                        match install(g, &game) {
                             Ok(l) => self.msg.extend(l),
                             Err(e) => self.msg.push(e),
                         }
@@ -291,7 +362,7 @@ impl eframe::App for App {
                         let players = h.players.lock().unwrap().clone();
                         ui.label(format!("Prisijungę: {}", if players.is_empty() { "dar niekas".into() } else { players.join(", ") }));
                         if ui.button("Paleisti žaidimą").clicked() {
-                            start_game();
+                            start_game(g);
                         }
                         ui.small("Nelaikyk šio lango uždaryto, kol žaidžiat: jame veikia serveris.");
                     }
@@ -300,7 +371,7 @@ impl eframe::App for App {
                     ui.label("Draugo kodas:");
                     ui.text_edit_singleline(&mut self.code);
                     if ui.button("Prisijungti ir paleisti žaidimą").clicked() && self.join() {
-                        start_game();
+                        start_game(g);
                         self.msg.push("Žaidimas paleidžiamas. Įkėlus išsaugojimą prisijungsi automatiškai.".into());
                     }
                 }

@@ -43,7 +43,7 @@ fn status_text() -> &'static str {
 /// The game's own menu fonts, taken from this PC's copy of the game (never shipped with the mod):
 /// %LOCALAPPDATA%\sa-de-coop\fonts\Beckett.ttf for headings; rows use Windows' Arial Bold like the game's options.
 fn font_file(name: &str) -> Option<Vec<u8>> {
-    let dir = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("sa-de-coop").join("fonts");
+    let dir = crate::game::data_dir()?.join("fonts");
     std::fs::read(dir.join(name)).ok()
 }
 
@@ -266,10 +266,7 @@ impl ImguiRenderLoop for CoopMenu {
 }
 
 // ---- the game's own menu: catch the "co-op" entry (FunctionToCallOnPress = "COOP") ---------------------------
-// UObject::ProcessEvent and the name pool for Steam build 1.0.113.49697469 (static RE, see re/).
-
-const PROCESS_EVENT: usize = 0x1C7C9C0;
-const NAME_POOL: usize = 0x570DDC0;
+// UObject::ProcessEvent and the name pool per game (crate::game, static RE, see re/).
 
 type ProcessEvent = unsafe extern "system" fn(*mut u8, *mut u8, *mut u8);
 static mut ORIGINAL: Option<ProcessEvent> = None;
@@ -300,7 +297,7 @@ unsafe fn outer_of(obj: *const u8) -> String {
 
 unsafe fn fname(obj: *const u8) -> String {
     let idx = *(obj.add(0x18) as *const u32);
-    let blk = *((BASE + NAME_POOL + 0x10 + (idx >> 16) as usize * 8) as *const usize);
+    let blk = *((BASE + crate::game::current().name_pool + 0x10 + (idx >> 16) as usize * 8) as *const usize);
     if blk == 0 {
         return String::new();
     }
@@ -324,7 +321,7 @@ unsafe fn fname(obj: *const u8) -> String {
 unsafe fn fname_at(p: *const u8) -> String {
     // same pool decoding as fname(), for an FName stored at `p`
     let idx = *(p as *const u32);
-    let blk = *((BASE + NAME_POOL + 0x10 + (idx >> 16) as usize * 8) as *const usize);
+    let blk = *((BASE + crate::game::current().name_pool + 0x10 + (idx >> 16) as usize * 8) as *const usize);
     if blk == 0 {
         return String::new();
     }
@@ -427,12 +424,13 @@ unsafe extern "system" fn detour(this: *mut u8, func: *mut u8, parms: *mut u8) {
                     o = *(o.add(0x20) as *const *const u8);
                 }
                 let cls = class_of(this);
-                let main_btn = cls == "UI_Button_MainMenu_SA_C";
-                // measured 11-08: title menu buttons are UI_Button_MainMenu_SA_C (co-op = 4), pause menu buttons
-                // UI_Button_Menu_SA_C (co-op = 7); the owning menu is not reachable through the outer chain
-                let pause_btn = cls == "UI_Button_Menu_SA_C";
-                let hit = (menu.contains("MainMenu") || (menu.is_empty() && main_btn)) && value == 4
-                    || (menu.contains("PauseMenu") || (menu.is_empty() && pause_btn)) && value == 7;
+                // SA, measured 11-08: title menu buttons are UI_Button_MainMenu_SA_C (co-op = 4), pause menu
+                // buttons UI_Button_Menu_SA_C (co-op = 7); the owning menu is not reachable through the outer chain
+                let g = crate::game::current();
+                let main_btn = !g.main_button.is_empty() && cls == g.main_button;
+                let pause_btn = !g.pause_button.is_empty() && cls == g.pause_button;
+                let hit = (menu.contains("MainMenu") || (menu.is_empty() && main_btn)) && value == g.main_coop
+                    || (menu.contains("PauseMenu") || (menu.is_empty() && pause_btn)) && value == g.pause_coop;
                 crate::log_line(&format!("click on {cls} value={value} menu={menu} coop={hit}"));
                 if hit {
                     OPEN.store(true, Ordering::SeqCst);
@@ -456,8 +454,13 @@ unsafe extern "system" fn detour(this: *mut u8, func: *mut u8, parms: *mut u8) {
 pub unsafe fn hook_menu() {
     use hudhook::mh::{MH_CreateHook, MH_EnableHook, MH_Initialize, MH_STATUS};
     BASE = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as usize;
-    let target = (BASE + PROCESS_EVENT) as *mut std::ffi::c_void;
-    let expect = [0x40u8, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x81, 0xEC];
+    let g = crate::game::current();
+    if g.process_event == 0 || g.name_pool == 0 {
+        crate::log_line("menu hook: addresses unknown for this game, co-op menu entry disabled (F9 still works)");
+        return;
+    }
+    let target = (BASE + g.process_event) as *mut std::ffi::c_void;
+    let expect = g.process_event_prologue;
     if std::slice::from_raw_parts(target as *const u8, expect.len()) != expect {
         crate::log_line("menu hook: unknown game build, co-op menu entry disabled (F9 still works)");
         return;

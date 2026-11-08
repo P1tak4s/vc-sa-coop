@@ -1,9 +1,10 @@
-//! coopnet64.dll: loaded by the CLEO Redux script `sa-coop.js` (DynamicLibrary.Load) and called through Fn.X64.
+//! coopnet64.dll: loaded by the CLEO Redux script `sa-coop.js` / `vc-coop.js` (DynamicLibrary.Load) and called through Fn.X64.
 //! Only integers cross the boundary: states go through memory the script allocates (layout = proto::State).
 //! The network runs on its own thread, so a slow or lost packet never stalls the game.
 
 mod ai;
 mod dialog;
+mod game;
 mod overlay;
 mod saves;
 mod scripthook;
@@ -45,9 +46,9 @@ struct Session {
     nick: String,
 }
 
-/// `%LOCALAPPDATA%\sa-de-coop\session.txt`, written by the launcher: `server=`, `key=` (hex), `nick=`.
+/// `%LOCALAPPDATA%\<sa|vc>-de-coop\session.txt`, written by the launcher: `server=`, `key=` (hex), `nick=`.
 fn read_session() -> Option<Session> {
-    let path = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("sa-de-coop").join("session.txt");
+    let path = game::data_dir()?.join("session.txt");
     let text = std::fs::read_to_string(&path).ok()?;
     let _ = std::fs::rename(&path, path.with_extension("used"));
     let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()));
@@ -292,7 +293,7 @@ pub unsafe extern "C" fn coop_ents_get(out: *mut u8) -> i64 {
 }
 
 fn car_file() -> Option<std::path::PathBuf> {
-    let dir = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("sa-de-coop");
+    let dir = game::data_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join("mano-masina.bin"))
 }
@@ -455,8 +456,7 @@ fn steam_thread(host: bool, name: String, pw: String) {
 }
 
 fn log_line(text: &str) {
-    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
-        let p = std::path::PathBuf::from(dir).join("sa-de-coop");
+    if let Some(p) = game::data_dir() {
         let _ = std::fs::create_dir_all(&p);
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p.join("coopnet.log")) {
@@ -496,8 +496,7 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
     if reason == 1 && !STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         let module = _module as usize;
         // hooks only inside the game itself (tools such as tools/dll_test.py load this DLL too)
-        let in_game = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.eq_ignore_ascii_case("SanAndreas.exe"))).unwrap_or(false);
-        if !in_game {
+        if game::detect().is_none() {
             return 1;
         }
         std::thread::spawn(dialog::hotkey_thread);
@@ -514,10 +513,10 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
             scripthook::install();
             let hinst = hudhook::windows::Win32::Foundation::HINSTANCE(module as isize);
             // one renderer only (both hook the same Present). DX12 hooks installed but never drew on 11-08, so DX11
-            // is the default; %LOCALAPPDATA%\sa-de-coop renderer.txt
+            // is the default; %LOCALAPPDATA%\<sa|vc>-de-coop renderer.txt
             // = "dx12" switches without a rebuild.
-            let choice = std::env::var_os("LOCALAPPDATA")
-                .and_then(|d| std::fs::read_to_string(std::path::PathBuf::from(d).join("sa-de-coop").join("renderer.txt")).ok())
+            let choice = game::data_dir()
+                .and_then(|d| std::fs::read_to_string(d.join("renderer.txt")).ok())
                 .unwrap_or_default();
             let dx12 = choice.trim().eq_ignore_ascii_case("dx12");
             log_line(&format!("overlay: starting, {}", if dx12 { "DX12" } else { "DX11" }));

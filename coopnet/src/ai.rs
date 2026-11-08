@@ -34,7 +34,10 @@ fn ask_jev(situation: &str) -> Option<i32> {
     let body = serde_json::json!({
         "model": "jev-latest",
         "state": {
-            "task": "You control the co-op partner of CJ in GTA San Andreas. Pick the partner's next action. If CJ gave an order, follow the order.",
+            "task": match crate::game::current().kind {
+                crate::game::Kind::Sa => "You control the co-op partner of CJ in GTA San Andreas. Pick the partner's next action. If CJ gave an order, follow the order.",
+                crate::game::Kind::Vc => "You control the co-op partner of Tommy Vercetti in GTA Vice City. Pick the partner's next action. If Tommy gave an order, follow the order.",
+            },
             "situation": situation,
         },
         "questions": { "action": { "type": "choice", "instructions": "What should the partner do now?", "criteria": criteria } }

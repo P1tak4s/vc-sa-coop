@@ -8,17 +8,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-const OPCODE_TABLE: usize = 0x4307D00;
-const CAN_START_MISSION: usize = 0x124E750;
-const SCRIPT_SPACE: usize = 0x51BEAE0;
-const PLAYER_ACTOR: usize = SCRIPT_SPACE + 12; // $PLAYER_ACTOR, the player's ped handle
-
-// CRunningScript (x64)
-const S_IP: usize = 0x20;
-const S_COND: usize = 0x115;
-const S_LOGIC: usize = 0x120;
-const S_NOT: usize = 0x122;
-const S_MISSION: usize = 0x12C;
+// Addresses and the CRunningScript (x64) layout per game: crate::game (SA values documented above).
+const MAX_GROUPS: usize = 32;
 
 /// Checks a partner can answer for the host ("either player"). From SA:COOP's generic rules plus vehicle checks.
 const EITHER: &[u32] = &[
@@ -40,7 +31,8 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 type Handler = unsafe extern "C" fn(*mut u8, u32) -> u8;
 type CanStart = unsafe extern "C" fn(*mut u8) -> u8;
-static mut ORIG: [usize; 27] = [0; 27];
+static mut ORIG: [usize; MAX_GROUPS] = [0; MAX_GROUPS];
+static mut GROUPS: usize = 0;
 static mut ORIG_CAN_START: Option<CanStart> = None;
 static mut BASE: usize = 0;
 
@@ -49,34 +41,36 @@ fn connected() -> bool {
 }
 
 unsafe extern "C" fn wrap(s: *mut u8, op: u32) -> u8 {
-    let f: Handler = std::mem::transmute(ORIG[(op / 100) as usize % 27]);
-    let ip = *(s.add(S_IP) as *const usize);
-    let cond = *s.add(S_COND);
-    let logic = *(s.add(S_LOGIC) as *const u16);
-    let not = *s.add(S_NOT);
+    let g = crate::game::current();
+    let (s_ip, s_cond, s_logic, s_not, s_mission) = (g.s_ip, g.s_cond, g.s_logic, g.s_not, g.s_mission);
+    let f: Handler = std::mem::transmute(ORIG[(op / 100) as usize % GROUPS]);
+    let ip = *(s.add(s_ip) as *const usize);
+    let cond = *s.add(s_cond);
+    let logic = *(s.add(s_logic) as *const u16);
+    let not = *s.add(s_not);
     let r = f(s, op);
     // ask again for the partner: host only, mission scripts only, plain (not NOT-ed) checks that said no
     let partner = PARTNER_PED.load(Ordering::Relaxed);
     if partner > 0
         && not == 0
-        && *s.add(S_MISSION) != 0
-        && *s.add(S_COND) == 0
+        && *s.add(s_mission) != 0
+        && *s.add(s_cond) == 0
         && EITHER.contains(&op)
         && connected()
         && crate::is_host()
     {
-        let actor = (BASE + PLAYER_ACTOR) as *mut i32;
-        let end_ip = *(s.add(S_IP) as *const usize);
+        let actor = (BASE + g.script_space + g.player_actor) as *mut i32;
+        let end_ip = *(s.add(s_ip) as *const usize);
         let saved_actor = *actor;
-        *(s.add(S_IP) as *mut usize) = ip;
-        *s.add(S_COND) = cond;
-        *(s.add(S_LOGIC) as *mut u16) = logic;
+        *(s.add(s_ip) as *mut usize) = ip;
+        *s.add(s_cond) = cond;
+        *(s.add(s_logic) as *mut u16) = logic;
         *actor = partner;
         let r2 = f(s, op);
         *actor = saved_actor;
         // same command, same parameters: it must end where the first run ended
-        if *(s.add(S_IP) as *const usize) != end_ip {
-            *(s.add(S_IP) as *mut usize) = end_ip;
+        if *(s.add(s_ip) as *const usize) != end_ip {
+            *(s.add(s_ip) as *mut usize) = end_ip;
         }
         return r2;
     }
@@ -106,22 +100,41 @@ pub unsafe fn install() {
         return;
     }
     BASE = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as usize;
-    let cs = (BASE + CAN_START_MISSION) as *const u8;
-    if std::slice::from_raw_parts(cs, 6) != [0x40, 0x53, 0x48, 0x83, 0xEC, 0x20] {
+    let g = crate::game::current();
+    if g.opcode_table == 0 || g.script_space == 0 || g.opcode_groups == 0 || g.opcode_groups > MAX_GROUPS {
+        crate::log_line("story hooks: addresses unknown for this game, off");
+        return;
+    }
+    let groups = g.opcode_groups;
+    let cs = (BASE + g.can_start_mission) as *const u8;
+    if g.can_start_mission != 0 && std::slice::from_raw_parts(cs, 6) != [0x40, 0x53, 0x48, 0x83, 0xEC, 0x20] {
         crate::log_line("story hooks: unknown game build, off");
         return;
     }
-    let table = (BASE + OPCODE_TABLE) as *mut usize;
+    let table = (BASE + g.opcode_table) as *mut usize;
+    // every entry must point into the exe, and the first handler must start with the bytes we know
+    let image = BASE..BASE + 0x1000_0000;
+    if (0..groups).any(|i| !image.contains(&*table.add(i)))
+        || (!g.opcode_check.is_empty() && std::slice::from_raw_parts(*table as *const u8, g.opcode_check.len()) != g.opcode_check)
+    {
+        crate::log_line("story hooks: opcode table does not match this build, off");
+        return;
+    }
     let mut old = 0u32;
-    if VirtualProtect(table as *const _, 27 * 8, PAGE_READWRITE, &mut old) == 0 {
+    if VirtualProtect(table as *const _, groups * 8, PAGE_READWRITE, &mut old) == 0 {
         crate::log_line("story hooks: cannot unprotect the opcode table");
         return;
     }
-    for i in 0..27 {
+    for i in 0..groups {
         ORIG[i] = *table.add(i);
         *table.add(i) = wrap as *const () as usize;
     }
-    VirtualProtect(table as *const _, 27 * 8, old, &mut old);
+    GROUPS = groups;
+    VirtualProtect(table as *const _, groups * 8, old, &mut old);
+    if g.can_start_mission == 0 {
+        crate::log_line("story hooks: opcode table wrapped (no mission start hook in this game)");
+        return;
+    }
     let _ = MH_Initialize();
     let mut orig: *mut std::ffi::c_void = std::ptr::null_mut();
     let st = MH_CreateHook(cs as *mut _, can_start as *mut _, &mut orig);

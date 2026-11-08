@@ -123,7 +123,7 @@ unsafe fn run_window() {
     let hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         class.as_ptr(),
-        w("SA Co-op").as_ptr(),
+        w(crate::game::current().title).as_ptr(),
         WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         (sw - ww) / 2,
         (sh - wh) / 2,

@@ -5,12 +5,12 @@
 use std::path::{Path, PathBuf};
 
 fn data_dir() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("sa-de-coop"))
+    crate::game::data_dir()
 }
 
 /// Documents\Rockstar Games\GTA San Andreas Definitive Edition\Profiles\<id>: the one with saves, else the first.
 fn profile_dir() -> Option<PathBuf> {
-    let root = PathBuf::from(std::env::var_os("USERPROFILE")?).join(r"Documents\Rockstar Games\GTA San Andreas Definitive Edition\Profiles");
+    let root = crate::game::profiles_dir()?;
     let dirs: Vec<PathBuf> = std::fs::read_dir(&root).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
     dirs.iter().find(|d| !saves_in(d).is_empty()).cloned().or_else(|| dirs.first().cloned())
 }
