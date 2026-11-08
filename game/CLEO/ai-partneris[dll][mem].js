@@ -36,6 +36,8 @@ function spawn(me) {
   Streaming.MarkModelAsNoLongerNeeded(MODEL);
   try { ped.setHealth(200); } catch (e) {}
   try { ped.giveWeapon(WEAPON, AMMO); ped.setCurrentWeapon(WEAPON); } catch (e) {}
+  // hate the rival gangs and cops-free hostiles, so the game's own combat AI shoots them too
+  for (const t of RIVALS) try { ped.setRelationship(4, t); } catch (e) {}
   // not in the player's group: its AI would pull the partner out of the driver's seat (we follow by ourselves)
   try { blip = Blip.AddForChar(ped); blip.setAsFriendly(true); } catch (e) {}
   action = "follow";
@@ -48,9 +50,24 @@ function despawn() {
   ped = null; blip = null;
 }
 
-// mission peds that are alive and within 60 m: the enemies the partner should care about
+// rival gangs: Ballas 7, Vagos 9, Rifa 10, Da Nang 11, Mafia 12, Triads 13, Aztecas 14 (Grove 8 is ours)
+const RIVALS = [7, 9, 10, 11, 12, 13, 14];
+
+// mission peds that are alive and within 60 m, plus rival gang members within 35 m
 function enemies(me) {
-  const p = me.getCoordinates(), out = [];
+  const p = me.getCoordinates(), out = [], seen = new Set();
+  try {
+    let first = true;
+    for (let k = 0; k < 30; k++) {
+      const c = World.GetRandomCharInSphereNoSaveRecursive(p.x, p.y, p.z, 35, !first, true);
+      first = false;
+      if (!c || +c <= 0 || seen.has(+c)) break;
+      seen.add(+c);
+      if (ped && +c === +ped) continue;
+      if (!RIVALS.includes(c.getPedType()) || c.getHealth() <= 0) continue;
+      out.push({ c, dd: d2(p, c.getCoordinates()) });
+    }
+  } catch (e) {}
   for (let i = 0; i < 75; i++) {
     const at = CLEANUP + i * 8;
     if (Memory.ReadU8(at, false, true) !== 2) continue;
@@ -59,7 +76,11 @@ function enemies(me) {
       if (!Char.DoesExist(h)) continue;
       const c = new Char(h);
       if (ped && +c === +ped) continue;
+      if (seen.has(+c)) continue;
       if (c.getHealth() <= 0) continue;
+      // mission peds include allies (Sweet, Ryder, Big Smoke): skip CJ's group and Grove Street (ped type 8)
+      try { if (c.isGroupMember(player.getGroup())) continue; } catch (e) {}
+      try { if (c.getPedType() === 8) continue; } catch (e) {}
       const dd = d2(p, c.getCoordinates());
       if (dd < 3600) out.push({ c, dd });
     } catch (e) {}
@@ -101,7 +122,17 @@ function keepUp(me, now) {
     if (me.isInAnyCar()) {
       const car = me.storeCarIsInNoSave();
       if (ped.isInAnyCar() && +ped.storeCarIsInNoSave() === +car) return;
-      if (dd < 64 && car.getSpeed() < 3) { ped.warpIntoCarAsPassenger(car, 0); return; }
+      if (dd < 64 && car.getSpeed() < 3) {
+        // only a FREE seat: never throw out Sweet or other mission passengers
+        let seat = -1;
+        try {
+          const n = car.getMaximumNumberOfPassengers();
+          // back seats first (1, 2), the front one (0) only if the back is taken
+          for (const s of [1, 2, 0]) if (s < n && car.isPassengerSeatFree(s)) { seat = s; break; }
+        } catch (e) {}
+        if (seat >= 0) ped.warpIntoCarAsPassenger(car, seat);
+        return; // no free seat: stay put, catch up after (40 m warp)
+      }
       Task.GoStraightToCoord(ped, a.x, a.y, a.z, 7, 3000);
       return;
     }
@@ -189,6 +220,103 @@ function drawTag() {
 }
 
 log("[ai] ready");
+// Down instead of dead, both ways, 30 s:
+//  - CJ down: the partner runs over and revives CJ (3 s next to him)
+//  - partner down: top banner "YOUR HOMIE IS DOWN", walk up to him and HOLD E for 3 s
+// Nobody in time: the normal death (CJ: wasted / mission failed; partner: back after 10 s).
+const DOWN_AT = 40, BLEED_OUT = 30000, REVIVE_MS = 3000, KEY_E = 69;
+try {
+  FxtStore.insert("COOPAD1", "TU SUZEISTAS! AI partneris ateina: ~1~ s");
+  FxtStore.insert("COOPAD2", "YOUR HOMIE IS DOWN! Atgaivink: ~1~ s");
+  FxtStore.insert("COOPAD3", "Laikyk E, kad atgaivintum: ~1~ %");
+} catch (e) {}
+function banner(key, num, y) {
+  try {
+    Text.UseCommands(true); Text.SetFont(1); Text.SetScale(0.5, 2.0); Text.SetCenter(true);
+    Text.SetColor(255, 80, 80, 255); Text.SetDropshadow(2, 0, 0, 0, 255);
+    Text.DisplayWithNumber(320, y || 30, key, Math.max(0, Math.ceil(num)));
+  } catch (e) {}
+}
+function knockDown(c) {
+  try { c.setProofs(true, true, true, true, true); } catch (e) {}
+  try { c.clearTasksImmediately(); } catch (e) {}
+  try { Task.PlayAnim(c, "KO_skid_back", "PED", 4.0, false, false, false, true, -1); } catch (e) {}
+}
+function standUp(c, health) {
+  try { c.clearTasksImmediately(); } catch (e) {}
+  try { c.setProofs(false, false, false, false, false); } catch (e) {}
+  c.setHealth(health);
+}
+
+let cjDown = false, cjDownAt = 0, reviveStart = 0;
+function cjUp(me, health) {
+  cjDown = false; reviveStart = 0;
+  try { player.setControl(true); } catch (e) {}
+  standUp(me, health);
+}
+function handleDown(me) {
+  const now = Date.now();
+  if (!cjDown) {
+    const h = me.getHealth();
+    if (h > 0 && h < DOWN_AT && !aiDown && ped.getHealth() > 0) {
+      cjDown = true; cjDownAt = now; reviveStart = 0;
+      if (me.isInAnyCar()) { try { const p = me.getCoordinates(); me.warpFromCarToCoord(p.x + 2, p.y, p.z); } catch (e) {} }
+      try { player.setControl(false); } catch (e) {}
+      knockDown(me);
+      log("[ai] CJ down, partner coming");
+    }
+    return false;
+  }
+  banner("COOPAD1", (BLEED_OUT - (now - cjDownAt)) / 1000);
+  if (now - cjDownAt > BLEED_OUT || ped.getHealth() <= 0) { cjUp(me, 0); return false; }
+  const a = me.getCoordinates();
+  if (d2(a, ped.getCoordinates()) > 2 * 2) {
+    reviveStart = 0;
+    try { if (ped.isInAnyCar()) ped.warpFromCarToCoord(a.x + 2, a.y + 1, a.z); else if (now - lastMove > 1000) { lastMove = now; Task.GoStraightToCoord(ped, a.x, a.y, a.z, 7, 1500); } } catch (e) {}
+    return true;
+  }
+  if (!reviveStart) { reviveStart = now; try { Task.StandStill(ped, REVIVE_MS); } catch (e) {} }
+  if (now - reviveStart >= REVIVE_MS) {
+    cjUp(me, 60);
+    try { showTextBox("AI partneris tave atgaivino"); } catch (e) {}
+    log("[ai] CJ revived");
+  }
+  return true;
+}
+
+let aiDown = false, aiDownAt = 0, holdStart = 0;
+// returns true while the partner is down (the main loop then skips its AI)
+function handlePartnerDown(me) {
+  const now = Date.now();
+  if (!aiDown) {
+    const h = ped.getHealth();
+    if (h > 0 && h < DOWN_AT) {
+      aiDown = true; aiDownAt = now; holdStart = 0; chauffeur = null; action = "follow";
+      if (ped.isInAnyCar()) { try { const p = ped.getCoordinates(); ped.warpFromCarToCoord(p.x + 2, p.y, p.z); } catch (e) {} }
+      knockDown(ped);
+      log("[ai] partner down");
+    }
+    return false;
+  }
+  const left = (BLEED_OUT - (now - aiDownAt)) / 1000;
+  banner("COOPAD2", left);
+  if (left <= 0) { aiDown = false; try { ped.setProofs(false, false, false, false, false); ped.setHealth(0); } catch (e) {} return false; }
+  if (!cjDown && !me.isInAnyCar() && d2(me.getCoordinates(), ped.getCoordinates()) < 2.5 * 2.5) {
+    if (Pad.IsKeyPressed(KEY_E)) {
+      if (!holdStart) holdStart = now;
+      const pct = (now - holdStart) / REVIVE_MS * 100;
+      banner("COOPAD3", Math.min(100, pct), 60);
+      if (pct >= 100) {
+        aiDown = false; holdStart = 0;
+        standUp(ped, 120);
+        try { showTextBox("Atgaivinai AI partneri"); } catch (e) {}
+        log("[ai] partner revived");
+      }
+    } else { holdStart = 0; banner("COOPAD3", 0, 60); }
+  } else holdStart = 0;
+  return true;
+}
+
 while (true) {
   wait(0);
   if (!player.isPlaying()) continue;
@@ -203,6 +331,8 @@ while (true) {
   }
   if (!ped) { spawn(me); continue; }
   try { if (ped.isGroupMember(player.getGroup())) ped.removeFromGroup(); } catch (e) {} // older builds put it there
+  if (handlePartnerDown(me)) continue;
+  if (handleDown(me)) continue;
   chauffeurKey(me);
   if (chauffeur) {
     if (!Car.DoesExist(chauffeur) || !me.isInAnyCar()) { chauffeur = null; action = "follow"; continue; }
@@ -214,8 +344,14 @@ while (true) {
     continue;
   }
   // too far behind (e.g. CJ drove off alone): catch up next to CJ
-  if (!me.isInAnyCar() && d2(me.getCoordinates(), ped.getCoordinates()) > 150 * 150) {
-    const p = me.getCoordinates(); ped.setCoordinates(p.x + 2, p.y + 2, p.z);
+  // or a cutscene / interior change moved CJ: warp next to CJ (40 m, and into CJ's interior)
+  if (!me.isInAnyCar() && !ped.isInAnyCar() && d2(me.getCoordinates(), ped.getCoordinates()) > 40 * 40) {
+    try {
+      const p = me.getCoordinates();
+      ped.setCoordinates(p.x + 1.5, p.y + 1.5, p.z);
+      ped.setAreaVisible(Streaming.GetAreaVisible());
+      log("[ai] warped next to CJ");
+    } catch (e) { log(`[ai] warp: ${e}`); }
   }
 
   const now = Date.now();
@@ -228,5 +364,15 @@ while (true) {
   }
   const r = aiResult();
   if (r >= 0 && r < ACTIONS.length) { if (ACTIONS[r] !== action) log(`[ai] Jev: ${ACTIONS[r]} (${sit})`); apply(ACTIONS[r], me, foes); }
+  // a foe within 25 m and the partner on foot: shoot it, whatever Jev said last (Jev may still be thinking)
+  if (foes.length && foes[0].dd < 625 && !ped.isInAnyCar() && action !== "attack" && action !== "take_cover") {
+    apply("attack", me, foes);
+  }
+  // the target died: take the next one, or go back to following
+  if (action === "attack") {
+    let dead = true;
+    try { dead = !target || !Char.DoesExist(target) || target.getHealth() <= 0; } catch (e) {}
+    if (dead) { if (foes.length) apply("attack", me, foes); else apply("follow", me, foes); }
+  }
   keepUp(me, now);
 }

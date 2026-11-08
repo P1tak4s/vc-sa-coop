@@ -35,9 +35,23 @@ const evBuf = Memory.Allocate(128);
 
 const KEY = { G: 71, E: 69 };
 const SKINS = [105, 106, 107, 105]; // Grove Street looks until we sync clothes
-const DOWN_AT = 20;                 // health below this: down instead of dead (while a friend is here)
-const BLEED_OUT = 60000;            // ms down before the game takes over
+const DOWN_AT = 40;                 // health below this: down instead of dead (one AK hit would skip a lower mark)
+const BLEED_OUT = 30000;            // ms down before the game takes over
+const REVIVE_HOLD = 3000;           // hold E this long next to a downed friend
 const DOWN_ANIM = ["KO_skid_back", "PED"];
+// top-centre banner with a seconds countdown (~1~ is the number)
+try {
+  FxtStore.insert("COOPDN1", "TU SUZEISTAS! Draugas gali atgaivinti: ~1~ s");
+  FxtStore.insert("COOPDN2", "YOUR HOMIE IS DOWN! Atgaivink: ~1~ s");
+  FxtStore.insert("COOPDN3", "Laikyk E, kad atgaivintum: ~1~ %");
+} catch (e) {}
+function banner(key, num, y) {
+  try {
+    Text.UseCommands(true); Text.SetFont(1); Text.SetScale(0.5, 2.0); Text.SetCenter(true);
+    Text.SetColor(255, 80, 80, 255); Text.SetDropshadow(2, 0, 0, 0, 255);
+    Text.DisplayWithNumber(320, y || 30, key, Math.max(0, Math.ceil(num)));
+  } catch (e) {}
+}
 
 const player = new Player(0);
 const remotes = [null, null, null, null];
@@ -182,10 +196,11 @@ function anyFriend() { return remotes.some((r) => r); }
 
 function goDown(me, now) {
   downed = true; downedAt = now;
+  if (me.isInAnyCar()) { try { const p = me.getCoordinates(); me.warpFromCarToCoord(p.x + 2, p.y, p.z); } catch (e) {} }
   me.setProofs(true, true, true, true, true);
   player.setControl(false);
   try { Task.PlayAnim(me, DOWN_ANIM[0], DOWN_ANIM[1], 4.0, false, false, false, true, -1); } catch (e) {}
-  say("SA Co-op: tu suzeistas. Draugas gali tave atgaivinti (60 s)");
+  say("SA Co-op: tu suzeistas. Draugas gali tave atgaivinti (30 s)");
 }
 
 function getUp(me, health) {
@@ -198,9 +213,10 @@ function getUp(me, health) {
 
 function handleOwnHealth(me, now) {
   if (!downed) {
-    if (anyFriend() && !me.isInAnyCar() && me.getHealth() < DOWN_AT && me.getHealth() > 0) goDown(me, now);
+    if (anyFriend() && me.getHealth() < DOWN_AT && me.getHealth() > 0) goDown(me, now);
     return;
   }
+  banner("COOPDN1", (BLEED_OUT - (now - downedAt)) / 1000);
   if (api.coop_take_revived()) { getUp(me, 60); say("SA Co-op: draugas tave atgaivino"); return; }
   if (now - downedAt > BLEED_OUT || !anyFriend()) { getUp(me, 0); } // nobody came: the game's own death
 }
@@ -371,15 +387,24 @@ function downRemote(r, s, slot, me) {
   leaveCar(r, s);
   if (r.car) dropCar(r);
   if (!r.down) {
-    r.down = true; r.hinted = false;
+    r.down = true; r.hinted = false; r.downAt = Date.now(); r.holdStart = 0;
     r.ped.setCoordinatesNoOffset(s.x, s.y, s.z);
     try { Task.PlayAnim(r.ped, DOWN_ANIM[0], DOWN_ANIM[1], 4.0, false, false, false, true, -1); } catch (e) {}
     say("SA Co-op: draugas suzeistas! Prieik ir spausk E");
   }
+  const left = (BLEED_OUT - (Date.now() - (r.downAt || Date.now()))) / 1000;
+  banner("COOPDN2", left);
   if (!downed && !me.isInAnyCar() && dist2(me.getCoordinates(), r.ped.getCoordinates()) < 2.5 * 2.5) {
-    if (!r.hinted) { say("Spausk E, kad atgaivintum drauga"); r.hinted = true; }
-    if (pressed(KEY.E)) api.coop_revive(slot);
-  }
+    if (Pad.IsKeyPressed(KEY.E)) {
+      if (!r.holdStart) r.holdStart = Date.now();
+      const pct = (Date.now() - r.holdStart) / REVIVE_HOLD * 100;
+      banner("COOPDN3", Math.min(100, pct), 60);
+      if (pct >= 100) { api.coop_revive(slot); r.holdStart = 0; }
+    } else {
+      r.holdStart = 0;
+      banner("COOPDN3", 0, 60);
+    }
+  } else r.holdStart = 0;
 }
 
 // their gun in their copy's hands; shooting is shown as shots straight ahead (no hits sync yet)
