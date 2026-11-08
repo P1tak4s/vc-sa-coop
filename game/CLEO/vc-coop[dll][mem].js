@@ -210,10 +210,11 @@ function readRemote() {
   return s;
 }
 
+// request and wait in small steps: LOAD_ALL_MODELS_NOW can block the script past CLEO's 2 s limit (11-08: the script
+// was disposed while a special character loaded)
 function loadModel(id) {
   Streaming.RequestModel(id);
-  Streaming.LoadAllModelsNow();
-  for (let i = 0; i < 40 && !Streaming.HasModelLoaded(id); i++) wait(25);
+  for (let i = 0; i < 80 && !Streaming.HasModelLoaded(id); i++) wait(25);
   return Streaming.HasModelLoaded(id);
 }
 
@@ -301,20 +302,12 @@ function handleOwnHealth(me, now) {
 }
 
 // ---- friends --------------------------------------------------------------------------------------------
-// story characters through the special slots (model 109 + slot - 1); the high slots, missions use the low ones
-const STORY_LOOKS = ["", "igken", "igsonny", "igdiaz", "igmerc", "igcandy", "ighlary", "iggonz"];
+// Looks are ordinary peds only. Story characters (special slots) must not be loaded from a script in the
+// Definitive Edition: 11-08 LOAD_SPECIAL_CHARACTER "igken" crashed the game (UE blueprint loaded off the game thread).
+// Same order as SKIN_NAMES_VC in coopnet/src/overlay.rs; 0 = a street look per slot.
+const LOOKS = [0, 83, 85, 87, 93, 58, 15, 49]; // -, CBa, HNa, SGa, BKa, WMYBE, HMYRI, WFYST
 function lookModel(slot, look) {
-  const name = STORY_LOOKS[look] || "";
-  if (name) {
-    const special = 21 - slot;
-    try {
-      Streaming.LoadSpecialCharacter(special, name);
-      Streaming.LoadAllModelsNow();
-      for (let i = 0; i < 40 && !Streaming.HasSpecialCharacterLoaded(special); i++) wait(25);
-      if (Streaming.HasSpecialCharacterLoaded(special)) return 109 + special - 1;
-    } catch (e) { log(`[vc-coop] look ${name}: ${e}`); }
-  }
-  const m = SKINS[slot];
+  const m = look > 0 && look < LOOKS.length ? LOOKS[look] : SKINS[slot];
   return loadModel(m) ? m : 0;
 }
 
@@ -323,7 +316,7 @@ function spawnPed(slot, s) {
   const model = lookModel(slot, look);
   if (!model) return null;
   const ped = Char.Create(4, model, s.x, s.y, s.z);
-  if (model < 109) Streaming.MarkModelAsNoLongerNeeded(model);
+  Streaming.MarkModelAsNoLongerNeeded(model);
   placeAt(pedPtr(ped), s.x, s.y, s.z);
   ped.setProofs(true, true, true, true, true); // traffic and cops must not kill the copy of your friend
   ped.setCantBeDraggedOut(true);

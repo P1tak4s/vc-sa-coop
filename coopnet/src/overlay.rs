@@ -12,8 +12,8 @@ pub static SKIN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(
 /// The last message about save sets, shown in the status row.
 pub static SAVE_NOTE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 pub const SKIN_NAMES: [&str; 8] = ["Grove Street narys", "Sweet", "Ryder", "Big Smoke", "Cesar", "Kendl", "Woozie", "The Truth"];
-/// Vice City: same order as STORY_LOOKS in vc-coop.js (special characters igken, igsonny, ...)
-pub const SKIN_NAMES_VC: [&str; 8] = ["Vice City vaikinas", "Ken Rosenberg", "Sonny Forelli", "Ricardo Diaz", "Mercedes", "Candy Suxxx", "Hilary King", "Gonzalez"];
+/// Vice City: same order as LOOKS in vc-coop.js; ordinary peds only (loading a story character crashed VC DE)
+pub const SKIN_NAMES_VC: [&str; 8] = ["Gatvės vaikinas", "Kubietis", "Haitietis", "Gaujos narys", "Baikeris", "Paplūdimio vaikinas", "Verslininkas", "Mergina"];
 
 fn skin_names() -> &'static [&'static str; 8] {
     match crate::game::current().kind {
