@@ -11,6 +11,10 @@ pub const WELCOME: u8 = 2; // server -> client: slot u8
 pub const DENY: u8 = 3; // server -> client: reason u8 (1 bad key, 2 full)
 pub const STATE: u8 = 4; // client -> server: State; server -> clients: slot u8 + State
 pub const LEAVE: u8 = 5; // client -> server: (empty); server -> clients: slot u8
+pub const EVENT: u8 = 8; // client -> server: kind u8 + ASCII text (<= 24); server -> clients: from slot u8 + same
+pub const EV_WEATHER: u8 = 1; // text: weather id
+pub const EV_CUTSCENE: u8 = 2; // text: cutscene name
+pub const EV_MISSION: u8 = 3; // text: mission script name ("" = mission over)
 pub const NAMES: u8 = 7; // server -> clients: n u8, then n x (slot u8, nick [16])
 pub const REVIVE: u8 = 6; // client -> server: target slot u8; server -> clients: from slot u8, target slot u8
 

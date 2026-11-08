@@ -23,6 +23,8 @@ struct Shared {
     revive_out: Option<u8>,     // a revive to send to that slot
     revived: bool,              // someone revived us; the script takes it once
     names: [String; MAX_PLAYERS],
+    events_out: Vec<Vec<u8>>,                       // kind + text, to send
+    events_in: std::collections::VecDeque<Vec<u8>>, // kind + text, received
 }
 
 fn shared() -> &'static Mutex<Shared> {
@@ -71,6 +73,11 @@ fn net_thread(sess: Session) {
         if let (2, Some(target)) = (status, revive) {
             let _ = sock.send_to(&packet(REVIVE, &[target]), sess.server);
         }
+        if status == 2 {
+            for ev in std::mem::take(&mut shared().lock().unwrap().events_out) {
+                let _ = sock.send_to(&packet(EVENT, &ev), sess.server);
+            }
+        }
         if stop {
             let _ = sock.send_to(&packet(LEAVE, &[]), sess.server);
             return;
@@ -107,6 +114,7 @@ fn net_thread(sess: Session) {
                     }
                 }
             }
+            EVENT if body.len() >= 2 && s.events_in.len() < 32 => s.events_in.push_back(body[1..].to_vec()),
             NAMES if !body.is_empty() => {
                 for e in body[1..].chunks_exact(1 + NICK_LEN).take(body[0] as usize) {
                     if (e[0] as usize) < MAX_PLAYERS {
@@ -209,6 +217,32 @@ pub unsafe extern "C" fn coop_name(slot: i64, out: *mut u8, max: i64) -> i64 {
     let len = n.len().min(max.max(0) as usize);
     std::ptr::copy_nonoverlapping(n.as_ptr(), out, len);
     len as i64
+}
+
+/// Queue an event for the others: kind (EV_*) and an ASCII text (null-terminated, up to 24 bytes).
+#[no_mangle]
+pub unsafe extern "C" fn coop_event_send(kind: i64, text: *const u8) -> i64 {
+    let t = c_str(text);
+    let mut ev = vec![kind as u8];
+    ev.extend(t.bytes().filter(|b| b.is_ascii_graphic()).take(24));
+    let mut s = shared().lock().unwrap();
+    if s.events_out.len() < 32 {
+        s.events_out.push(ev);
+    }
+    1
+}
+
+/// Next received event: returns its kind (0 = none) and writes its text, null-terminated, into `out` (32 bytes).
+#[no_mangle]
+pub unsafe extern "C" fn coop_event_poll(out: *mut u8) -> i64 {
+    let Some(ev) = shared().lock().unwrap().events_in.pop_front() else { return 0 };
+    if out.is_null() || ev.is_empty() {
+        return 0;
+    }
+    let text: Vec<u8> = ev[1..].iter().copied().filter(|b| b.is_ascii_graphic()).take(31).collect();
+    std::ptr::copy_nonoverlapping(text.as_ptr(), out, text.len());
+    *out.add(text.len()) = 0;
+    ev[0] as i64
 }
 
 fn car_file() -> Option<std::path::PathBuf> {
@@ -333,6 +367,13 @@ fn steam_thread(host: bool, name: String, pw: String) {
             }
             last_send = Instant::now();
         }
+        for ev in std::mem::take(&mut shared().lock().unwrap().events_out) {
+            let mut body = vec![my_slot.max(0) as u8];
+            body.extend_from_slice(&ev);
+            for to in members.iter().copied().filter(|&m| m != st.me()) {
+                st.send(to, &packet(EVENT, &body), steam::SEND_RELIABLE);
+            }
+        }
         if let Some(t) = revive {
             if let Some(&to) = members.get(t as usize) {
                 st.send(to, &packet(REVIVE, &[my_slot.max(0) as u8, t]), steam::SEND_RELIABLE);
@@ -351,6 +392,7 @@ fn steam_thread(host: bool, name: String, pw: String) {
                     }
                 }
                 REVIVE if body.len() == 2 && body[1] as i32 == s.slot => s.revived = true,
+                EVENT if body.len() >= 2 && s.events_in.len() < 32 => s.events_in.push_back(body[1..].to_vec()),
                 _ => {}
             }
         }

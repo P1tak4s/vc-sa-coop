@@ -89,6 +89,11 @@ pub fn run_server(sock: UdpSocket, key: u32, players: Players) {
             (REVIVE, Some(s)) if body.len() == 1 && (body[0] as usize) < MAX_PLAYERS => {
                 broadcast(&sock, &peers, Some(s), &packet(REVIVE, &[s as u8, body[0]]));
             }
+            (EVENT, Some(s)) if (2..=25).contains(&body.len()) => {
+                let mut out = vec![s as u8];
+                out.extend_from_slice(body);
+                broadcast(&sock, &peers, Some(s), &packet(EVENT, &out));
+            }
             (LEAVE, Some(s)) => {
                 peers[s] = None;
                 broadcast(&sock, &peers, None, &packet(LEAVE, &[s as u8]));
