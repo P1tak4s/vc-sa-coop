@@ -2,6 +2,7 @@
 //! Only integers cross the boundary: states go through memory the script allocates (layout = proto::State).
 //! The network runs on its own thread, so a slow or lost packet never stalls the game.
 
+mod ai;
 mod dialog;
 mod overlay;
 mod saves;
@@ -576,6 +577,24 @@ pub extern "C" fn coop_set_partner(handle: i64, near: i64) -> i64 {
     scripthook::PARTNER_PED.store(handle as i32, std::sync::atomic::Ordering::Relaxed);
     scripthook::PARTNER_NEAR.store(near != 0, std::sync::atomic::Ordering::Relaxed);
     1
+}
+
+/// AI partner switch from the co-op menu: 1 = on.
+#[no_mangle]
+pub extern "C" fn coop_ai_enabled() -> i64 {
+    ai::ENABLED.load(std::sync::atomic::Ordering::SeqCst) as i64
+}
+
+/// Ask Jev what the AI partner should do; `situation` is ASCII text, null-terminated. 1 = asked, 0 = busy.
+#[no_mangle]
+pub unsafe extern "C" fn coop_ai_ask(situation: *const u8) -> i64 {
+    ai::ask(c_str(situation))
+}
+
+/// Jev's latest answer once: 0 follow, 1 enter_car, 2 attack, 3 take_cover, 4 wait; -1 = none yet.
+#[no_mangle]
+pub extern "C" fn coop_ai_result() -> i64 {
+    ai::take()
 }
 
 /// 1 = we host the session (our story), 0 = we joined someone else's.

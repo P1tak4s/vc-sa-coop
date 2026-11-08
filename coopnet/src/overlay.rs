@@ -122,7 +122,7 @@ impl ImguiRenderLoop for CoopMenu {
         let pw = &mut self.pw;
         ui.window("##sacoop")
             .position([x0, y0], Condition::Always)
-            .size([w, ROW_H * 9.4], Condition::Always)
+            .size([w, ROW_H * 10.4], Condition::Always)
             .title_bar(false)
             .resizable(false)
             .movable(false)
@@ -215,7 +215,17 @@ impl ImguiRenderLoop for CoopMenu {
                 }
                 y += ROW_H;
 
-                if !join_tab && row_bg(y, 6, "Bandymas su robotu (be draugo)") {
+                if !join_tab {
+                    let on = crate::ai::ENABLED.load(Ordering::SeqCst);
+                    if row_bg(y, 6, "AI partneris (Jev)") {
+                        crate::ai::ENABLED.store(!on, Ordering::SeqCst);
+                    }
+                    let label = if on { "<  Įjungtas  >" } else { "<  Išjungtas  >" };
+                    let ts = ui.calc_text_size(label);
+                    dl.add_text([origin[0] + w - ts[0] - 30.0, y + (ROW_H - ts[1]) / 2.0], [1.0, 1.0, 1.0, 1.0], label);
+                    y += ROW_H;
+                }
+                if !join_tab && row_bg(y, 7, "Bandymas su robotu (be draugo)") {
                     // leave any session first, then host over UDP so the test bot can join
                     crate::leave_session();
                     if crate::coop_host() == 1 {
@@ -225,7 +235,7 @@ impl ImguiRenderLoop for CoopMenu {
                 if !join_tab {
                     y += ROW_H;
                 }
-                if row_bg(y, 7, "Atgal") {
+                if row_bg(y, 8, "Atgal") {
                     close = true;
                 }
             });
