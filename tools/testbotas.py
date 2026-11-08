@@ -313,7 +313,16 @@ def run_phase(name, seconds, what):
         pump()
         t = time.time() - start
         me = you.get(host_slot, me)
+        # follow the player live: circles go around where you are now (a parked car moves only if you go far)
+        if name != "stovi" or math.hypot(me["x"] - center[0], me["y"] - center[1]) > 30:
+            center = (me["x"], me["y"], me["z"])
         cx, cy, cz = center
+        if me["interior"] != 0 or world.get(host_slot, {}).get("cut", "-") != "-":
+            # you are inside or in a cutscene: wait beside you, these seconds do not count
+            send_state(me["x"] + 1.5, me["y"], me["z"], 0, interior=me["interior"])
+            start += 0.05
+            time.sleep(0.05)
+            continue
         if name == "eina":
             a = t * 0.4; x, y = cx + 4 * math.cos(a), cy + 4 * math.sin(a)
             send_state(x, y, cz, (math.degrees(a) + 180) % 360, weapon=17, vel=(-1.6 * math.sin(a), 1.6 * math.cos(a), 0))
