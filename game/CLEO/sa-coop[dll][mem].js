@@ -23,10 +23,10 @@ try {
   exit("setup failed");
 }
 
-// proto::State, 64 bytes
-const SIZE = 64;
+// proto::State, 72 bytes
+const SIZE = 72;
 const F = { x: 0, y: 4, z: 8, heading: 12, vx: 16, vy: 20, vz: 24, qx: 28, qy: 32, qz: 36, qw: 40, carSpeed: 44 };
-const I = { inCar: 48, carModel: 52, health: 56, carHealth: 60 };
+const I = { inCar: 48, carModel: 52, health: 56, carHealth: 60, interior: 64, clock: 68 };
 const mine = Memory.Allocate(SIZE);
 const theirs = Memory.Allocate(SIZE);
 const codeBuf = Memory.Allocate(32);
@@ -160,6 +160,11 @@ function writeMine(me) {
   Memory.WriteI32(mine + I.carModel, carModel, false, false);
   Memory.WriteI32(mine + I.health, downed ? -1 : me.getHealth(), false, false);
   Memory.WriteI32(mine + I.carHealth, carHealth, false, false);
+  let area = 0;
+  try { area = me.getAreaVisible(); } catch (e) {}
+  Memory.WriteI32(mine + I.interior, area, false, false);
+  const t = Clock.GetTimeOfDay();
+  Memory.WriteI32(mine + I.clock, t.hours * 60 + t.minutes, false, false);
   api.coop_send(mine);
 }
 
@@ -327,6 +332,14 @@ function downRemote(r, s, slot, me) {
   }
 }
 
+// the lowest slot keeps time for everyone; a jump of more than 2 minutes is corrected
+function followClock(minutes) {
+  if (minutes < 0 || minutes >= 1440) return;
+  const t = Clock.GetTimeOfDay(), ours = t.hours * 60 + t.minutes;
+  let diff = Math.abs(ours - minutes); diff = Math.min(diff, 1440 - diff);
+  if (diff > 2) Clock.SetTimeOfDay(Math.floor(minutes / 60), minutes % 60);
+}
+
 function syncRemotes(me, mySlot, now) {
   for (let slot = 0; slot < 4; slot++) {
     if (slot === mySlot) continue;
@@ -343,6 +356,8 @@ function syncRemotes(me, mySlot, now) {
     if (!r) continue;
     r.lostAt = 0;
     try {
+      if (r.area !== s.interior) { r.area = s.interior; r.ped.setAreaVisible(s.interior); if (r.car) r.car.setAreaVisible(s.interior); }
+      if (slot < mySlot || mySlot < 0) followClock(s.clock);
       if (s.health < 0) { downRemote(r, s, slot, me); continue; }
       if (r.down) { r.down = false; try { r.ped.clearTasksImmediately(); } catch (e) {} }
       if (s.inCar === 1) driveRemote(r, s, now);

@@ -46,13 +46,13 @@ while True:
         x, y = center[0] + r * math.cos(a), center[1] + r * math.sin(a)
         heading = math.degrees(a) % 360  # SA: 0 = north (+y), counter-clockwise; at angle a the circle runs (-sin a, cos a)
         h = math.radians(heading)
-        st = struct.pack("<12f4i", x, y, center[2] + 0.5, heading, 0, 0, 0, 0, 0, math.sin(h / 2), math.cos(h / 2), r * w,
-                         1, 411, 100, 1000)
+        st = struct.pack("<12f6i", x, y, center[2] + 0.5, heading, 0, 0, 0, 0, 0, math.sin(h / 2), math.cos(h / 2), r * w,
+                         1, 411, 100, 1000, 0, 720)
     else:
         a = (time.time() - t0) * 0.4  # ~1.6 m/s on a 4 m circle: a walk
         x, y = center[0] + 4 * math.cos(a), center[1] + 4 * math.sin(a)
         heading = (math.degrees(a) + 180) % 360
         if down: x, y = center[0] + 3, center[1]
-        st = struct.pack("<12f4i", x, y, center[2], heading, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, -1 if down else 100, 0)
+        st = struct.pack("<12f6i", x, y, center[2], heading, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, -1 if down else 100, 0, 0, 720)
     s.sendto(MAGIC + bytes([4]) + st, srv)
     time.sleep(0.05)
