@@ -164,6 +164,24 @@ unsafe extern "system" fn detour(this: *mut u8, func: *mut u8, parms: *mut u8) {
                         }
                     }
                 }
+            } else if name == "InteractedButton" && !this.is_null() && !parms.is_null() {
+                // the menu widget (UUI_Menu_Base) tells which entry was used: look it up in FunctionToCallOnPress
+                let idx = *(parms as *const i32);
+                let arr = *(this.add(0x258) as *const *const u8);
+                let num = *(this.add(0x260) as *const i32);
+                crate::log_line(&format!("InteractedButton idx={idx} entries={num}"));
+                if !arr.is_null() && idx >= 0 && idx < num && num < 32 {
+                    let e = arr.add(idx as usize * 16);
+                    let data = *(e as *const *const u16);
+                    let n = *(e.add(8) as *const i32);
+                    if !data.is_null() && (2..64).contains(&n) {
+                        let s = String::from_utf16_lossy(std::slice::from_raw_parts(data, n as usize - 1));
+                        crate::log_line(&format!("  entry = {s}"));
+                        if s == "COOP" {
+                            OPEN.store(true, Ordering::SeqCst);
+                        }
+                    }
+                }
             } else if name.contains("Click") || name.contains("Press") || name.contains("Button") || name.contains("Selected") {
                 // first run: learn which menu events go through here (coopnet.log), so we can catch the click
                 let mut l = LOGGED.lock().unwrap();

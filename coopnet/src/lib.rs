@@ -449,17 +449,19 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
             return 1;
         }
         std::thread::spawn(dialog::hotkey_thread);
+        std::panic::set_hook(Box::new(|info| log_line(&format!("panic: {info}"))));
         std::thread::spawn(move || unsafe {
             // the "co-op" entry of the game's menus, then the menu drawn into the game (DX12, else DX11)
             overlay::hook_menu();
             let hinst = hudhook::windows::Win32::Foundation::HINSTANCE(module as isize);
+            log_line("overlay: starting");
             let r = hudhook::Hudhook::builder()
                 .with::<hudhook::hooks::dx12::ImguiDx12Hooks>(overlay::CoopMenu::default())
                 .with::<hudhook::hooks::dx11::ImguiDx11Hooks>(overlay::CoopMenu::default())
                 .with_hmodule(hinst)
                 .build()
                 .apply();
-            log_line(&format!("overlay hooks: {:?}", r.is_ok()));
+            log_line(&format!("overlay hooks: {:?}", r.as_ref().map(|_| ()).map_err(|e| format!("{e:?}"))));
         });
     }
     1
