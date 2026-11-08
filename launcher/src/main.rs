@@ -70,7 +70,7 @@ fn install(game: &Path) -> Result<Vec<String>, String> {
     let mut log = vec![];
     copy_tree(&src, game, &mut log).map_err(|e| format!("Nepavyko nukopijuoti: {e}"))?;
     // files of older versions: a second copy of the DLL would run its own, separate network
-    for old in ["coopnet64.dll", r"CLEO\sa-coop.js", r"CLEO\coop-test.js"] {
+    for old in ["coopnet64.dll", r"CLEO\sa-coop.js", r"CLEO\coop-test.js", r"CLEO\mano-masina.js"] {
         let _ = std::fs::remove_file(game.join(old));
     }
     log.push("Modas įdiegtas.".into());

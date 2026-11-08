@@ -211,6 +211,39 @@ pub unsafe extern "C" fn coop_name(slot: i64, out: *mut u8, max: i64) -> i64 {
     len as i64
 }
 
+fn car_file() -> Option<std::path::PathBuf> {
+    let dir = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("sa-de-coop");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("mano-masina.bin"))
+}
+
+/// Remember your car across save/load: 28 bytes (model i32, x, y, z, heading f32, color1, color2 i32).
+/// A null pointer forgets it (the car was wrecked).
+#[no_mangle]
+pub unsafe extern "C" fn coop_car_store(data: *const u8) -> i64 {
+    let Some(path) = car_file() else { return 0 };
+    if data.is_null() {
+        let _ = std::fs::remove_file(path);
+        return 1;
+    }
+    std::fs::write(path, std::slice::from_raw_parts(data, 28)).is_ok() as i64
+}
+
+/// The remembered car into `out` (28 bytes). 1 = there is one.
+#[no_mangle]
+pub unsafe extern "C" fn coop_car_load(out: *mut u8) -> i64 {
+    let Some(bytes) = car_file().and_then(|p| std::fs::read(p).ok()) else { return 0 };
+    if out.is_null() || bytes.len() != 28 {
+        return 0;
+    }
+    let model = i32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    if !(400..=611).contains(&model) {
+        return 0;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, 28);
+    1
+}
+
 /// Revive the player in `slot` (the script checked they are down and we stand next to them).
 #[no_mangle]
 pub extern "C" fn coop_revive(slot: i64) -> i64 {
