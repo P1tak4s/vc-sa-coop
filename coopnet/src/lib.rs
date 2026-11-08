@@ -95,7 +95,10 @@ fn net_thread(sess: Session) {
             let _ = sock.send_to(&packet(LEAVE, &[]), sess.server);
             return;
         }
-        if status == 1 && last_join.elapsed() > Duration::from_secs(1) {
+        // joining: every second; joined: every 3 s as a keepalive, so a pause in the menus (no state sent)
+        // cannot get us dropped for good by the server's 10 s timeout
+        let every = if status == 1 { Duration::from_secs(1) } else { Duration::from_secs(3) };
+        if matches!(status, 1 | 2) && last_join.elapsed() > every {
             let _ = sock.send_to(&join, sess.server);
             last_join = Instant::now();
         }
