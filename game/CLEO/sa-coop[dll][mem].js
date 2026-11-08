@@ -812,4 +812,11 @@ while (true) {
   hearWorld(me);
   missionsTick(now);
   if (pressed(KEY.G)) tryRideAlong(me);
+  // F in a friend's car: straight out beside it (the car is moved every frame, which breaks the exit animation)
+  if (pressed(70) && me.isInAnyCar()) {
+    try {
+      const car = me.storeCarIsInNoSave();
+      if (remoteWithCar(car) >= 0) { const c = car.getCoordinates(); me.warpFromCarToCoord(c.x + 2.5, c.y + 1, c.z); }
+    } catch (e) {}
+  }
 }
