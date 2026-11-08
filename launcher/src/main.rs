@@ -74,7 +74,44 @@ fn install(game: &Path) -> Result<Vec<String>, String> {
         let _ = std::fs::remove_file(game.join(old));
     }
     log.push("Modas įdiegtas.".into());
+    extras(game, &mut log);
     Ok(log)
+}
+
+/// Beside `game\`: `extra\coop_P.pak` (the co-op entry in the game's menus), `extra\Engine.ini` (sharper, further
+/// graphics; only if the player has none) and `extra\repak.exe`, which takes the menu fonts out of this PC's own
+/// copy of the game (they are never shipped with the mod).
+fn extras(win64: &Path, log: &mut Vec<String>) {
+    let extra = bundle_dir().with_file_name("extra");
+    let Some(gameface) = win64.parent().and_then(|p| p.parent()) else { return };
+    let mods = gameface.join(r"Content\Paks\~mods");
+    if extra.join("coop_P.pak").is_file() && std::fs::create_dir_all(&mods).is_ok() && std::fs::copy(extra.join("coop_P.pak"), mods.join("coop_P.pak")).is_ok() {
+        log.push("„co-op“ įrašas meniu įdiegtas.".into());
+    }
+    if let Some(docs) = std::env::var_os("USERPROFILE").map(|u| PathBuf::from(u).join(r"Documents\Rockstar Games\GTA San Andreas Definitive Edition\Config\WindowsNoEditor")) {
+        let ini = docs.join("Engine.ini");
+        if !ini.exists() && extra.join("Engine.ini").is_file() && std::fs::create_dir_all(&docs).is_ok() && std::fs::copy(extra.join("Engine.ini"), &ini).is_ok() {
+            log.push("Grafikos patobulinimai įjungti (Engine.ini).".into());
+        }
+    }
+    let fonts = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join(r"sa-de-coop\fonts");
+    let pak = gameface.join(r"Content\Paks\pakchunk0-WindowsNoEditor.pak");
+    if extra.join("repak.exe").is_file() && std::fs::create_dir_all(&fonts).is_ok() {
+        use std::os::windows::process::CommandExt;
+        for f in ["Beckett", "BankGothicMdBT"] {
+            let out = std::process::Command::new(extra.join("repak.exe"))
+                .arg("get")
+                .arg(&pak)
+                .arg(format!("Gameface/Content/Common/Fonts/{f}.ufont"))
+                .creation_flags(0x0800_0000)
+                .output();
+            if let Ok(o) = out {
+                if o.status.success() && o.stdout.len() > 1000 && std::fs::write(fonts.join(format!("{f}.ttf")), &o.stdout).is_ok() {
+                    log.push(format!("Šriftas {f} paimtas iš žaidimo."));
+                }
+            }
+        }
+    }
 }
 
 fn installed(game: &Path) -> bool {
