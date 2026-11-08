@@ -127,6 +127,26 @@ static mut ORIGINAL: Option<ProcessEvent> = None;
 static mut BASE: usize = 0;
 static mut CFS_FN: usize = 0; // the CustomFunctionFromString UFunction once seen
 static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static mut LAST_IDX: i32 = -1;
+static mut MAX_IDX: i32 = -1;
+
+fn log_once(text: &str) {
+    let mut l = LOGGED.lock().unwrap();
+    if l.len() < 200 && !l.iter().any(|x| x == text) {
+        crate::log_line(text);
+        l.push(text.to_string());
+    }
+}
+
+unsafe fn class_of(obj: *const u8) -> String {
+    let class = *(obj.add(0x10) as *const *const u8);
+    if class.is_null() { String::new() } else { fname(class) }
+}
+
+unsafe fn outer_of(obj: *const u8) -> String {
+    let outer = *(obj.add(0x20) as *const *const u8);
+    if outer.is_null() { String::new() } else { format!("{} {}", class_of(outer), fname(outer)) }
+}
 
 unsafe fn fname(obj: *const u8) -> String {
     let idx = *(obj.add(0x18) as *const u32);
@@ -165,22 +185,16 @@ unsafe extern "system" fn detour(this: *mut u8, func: *mut u8, parms: *mut u8) {
                     }
                 }
             } else if name == "InteractedButton" && !this.is_null() && !parms.is_null() {
-                // the menu widget (UUI_Menu_Base) tells which entry was used: look it up in FunctionToCallOnPress
+                // the hovered/used entry's position in the visible list; co-op is always next to last (before exit)
                 let idx = *(parms as *const i32);
-                let arr = *(this.add(0x258) as *const *const u8);
-                let num = *(this.add(0x260) as *const i32);
-                crate::log_line(&format!("InteractedButton idx={idx} entries={num}"));
-                if !arr.is_null() && idx >= 0 && idx < num && num < 32 {
-                    let e = arr.add(idx as usize * 16);
-                    let data = *(e as *const *const u16);
-                    let n = *(e.add(8) as *const i32);
-                    if !data.is_null() && (2..64).contains(&n) {
-                        let s = String::from_utf16_lossy(std::slice::from_raw_parts(data, n as usize - 1));
-                        crate::log_line(&format!("  entry = {s}"));
-                        if s == "COOP" {
-                            OPEN.store(true, Ordering::SeqCst);
-                        }
-                    }
+                LAST_IDX = idx;
+                if idx > MAX_IDX { MAX_IDX = idx; }
+                log_once(&format!("InteractedButton on {} (outer {})", class_of(this), outer_of(this)));
+            } else if name.contains("OnButtonClickedEvent") && !this.is_null() {
+                let (li, mi) = (LAST_IDX, MAX_IDX);
+                crate::log_line(&format!("click on {} idx={li} max={mi}", class_of(this)));
+                if MAX_IDX >= 2 && LAST_IDX == MAX_IDX - 1 {
+                    OPEN.store(true, Ordering::SeqCst);
                 }
             } else if name.contains("Click") || name.contains("Press") || name.contains("Button") || name.contains("Selected") {
                 // first run: learn which menu events go through here (coopnet.log), so we can catch the click

@@ -454,13 +454,23 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
             // the "co-op" entry of the game's menus, then the menu drawn into the game (DX12, else DX11)
             overlay::hook_menu();
             let hinst = hudhook::windows::Win32::Foundation::HINSTANCE(module as isize);
-            log_line("overlay: starting");
-            let r = hudhook::Hudhook::builder()
-                .with::<hudhook::hooks::dx12::ImguiDx12Hooks>(overlay::CoopMenu::default())
-                .with::<hudhook::hooks::dx11::ImguiDx11Hooks>(overlay::CoopMenu::default())
-                .with_hmodule(hinst)
-                .build()
-                .apply();
+            // one renderer only (both hook the same Present): D3D12Core.dll appears once the game makes a DX12 device
+            let mut dx12 = false;
+            for _ in 0..300 {
+                if !windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(dialog::wide("D3D12Core.dll").as_ptr()).is_null() {
+                    dx12 = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            log_line(&format!("overlay: starting, {}", if dx12 { "DX12" } else { "DX11" }));
+            let b = hudhook::Hudhook::builder();
+            let b = if dx12 {
+                b.with::<hudhook::hooks::dx12::ImguiDx12Hooks>(overlay::CoopMenu::default())
+            } else {
+                b.with::<hudhook::hooks::dx11::ImguiDx11Hooks>(overlay::CoopMenu::default())
+            };
+            let r = b.with_hmodule(hinst).build().apply();
             log_line(&format!("overlay hooks: {:?}", r.as_ref().map(|_| ()).map_err(|e| format!("{e:?}"))));
         });
     }
