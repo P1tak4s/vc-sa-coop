@@ -168,9 +168,10 @@ def pump():
 
 
 def send_state(x, y, z, heading=0.0, in_car=0, car_model=0, health=100, car_health=0, interior=0, weapon=0,
-               speed=0.0, q=(0.0, 0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0)):
+               speed=0.0, q=(0.0, 0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), fight=False):
+    # flag 4: "fight for me" (the game's copy of the bot attacks mission enemies)
     st = struct.pack(STATE_FMT, x, y, z, heading, *vel, *q, speed, in_car, car_model, health, car_health, interior,
-                     720, weapon, SKIN << 16)
+                     720, weapon, SKIN << 16 | (4 if fight else 0))
     sock.sendto(MAGIC + bytes([STATE]) + st, srv)
 
 
@@ -207,10 +208,12 @@ AI_KEY = load_key() if os.environ.get("DI", "1") != "0" else ""
 ai = {"veiksmas": "sekti", "x": None, "y": None, "busy": False, "notes": [], "asked": 0.0, "events_from": 0, "last_sit": ""}
 AI_RULES = (
     "Tu esi testų robotas, žaidžiantis kaip žaidėjo draugas GTA Vice City Definitive Edition co-op modo bandyme. "
-    "Gauni situaciją JSON. Grąžink TIK JSON: {\"veiksmas\": \"sekti\"|\"salia\"|\"keleivis\"|\"eiti\"|\"laukti\", "
+    "Gauni situaciją JSON. Grąžink TIK JSON: {\"veiksmas\": \"sekti\"|\"salia\"|\"keleivis\"|\"eiti\"|\"laukti\"|\"kovoti\", "
     "\"x\": skaičius arba null, \"y\": skaičius arba null, \"pastaba\": \"\"}. "
     "sekti = eiti 2 m už žaidėjo; salia = stovėti šalia; keleivis = sėdėti žaidėjo mašinoje (tik kai jis vairuoja); "
-    "eiti = nueiti į x,y (pvz. misijos tikslą); laukti = stovėti vietoje. "
+    "eiti = nueiti į x,y (pvz. misijos tikslą); laukti = stovėti vietoje; "
+    "kovoti = būti šalia žaidėjo su M4 ir pulti misijos priešus (rinkis, kai žaidėjas misijoje (mis ne '-') ir pėsčias, "
+    "ypač kai misijos objektų > 0 arba žaidėjas sužeistas/ieškomas). "
     "pastaba: vienas trumpas sakinys lietuviškai apie tai, ką pastebėjai apie co-op veikimą: ar tavo kopija žaidėjo "
     "žaidime yra ten, kur tu (raporto e metrais), ar matomas vardas (nm), pjūviai (cut, hc), misijos (mis, hm), klaidos "
     "(err, E), interjerai (a, ar). Nekartok to, kas jau yra tavo ankstesnėse pastabose ar testų rezultatuose: "
@@ -238,6 +241,7 @@ def situation():
         "zaidejas": player,
         "zaidimo_raportas_apie_mane": last,
         "zaidimo_busena": world.get(host_slot, {}),
+        "misijos_objektu": ents_seen,
         "nauji_ivykiai": new_events,
         "mano_veiksmas": ai["veiksmas"],
         "testu_rezultatai": [{"etapas": x["etapas"], "ok": x["ok"]} for x in results],
@@ -265,7 +269,7 @@ def ai_tick():
         try:
             out = ai_call([{"role": "system", "content": AI_RULES},
                            {"role": "user", "content": json.dumps(sit, ensure_ascii=False)}])
-            if out.get("veiksmas") in ("sekti", "salia", "keleivis", "eiti", "laukti"):
+            if out.get("veiksmas") in ("sekti", "salia", "keleivis", "eiti", "laukti", "kovoti"):
                 if out["veiksmas"] != ai["veiksmas"]:
                     say(f"DI: dabar {out['veiksmas']}")
                 ai.update(veiksmas=out["veiksmas"], x=out.get("x"), y=out.get("y"))
@@ -470,6 +474,9 @@ while True:
                        vel=(dx / d * 5, dy / d * 5, 0) if d > 0.5 else (0, 0, 0))
         elif act == "laukti" and pos:
             send_state(pos[0], pos[1], me["z"], 0, interior=me["interior"])
+        elif act == "kovoti":  # beside you with an M4; the game's copy attacks mission enemies
+            pos = (me["x"] + 1.5 * math.cos(h), me["y"] + 1.5 * math.sin(h))
+            send_state(pos[0], pos[1], me["z"], me["heading"], interior=me["interior"], weapon=26, fight=True)
         else:
             if act == "salia":  # a step to your right
                 pos = (me["x"] + 1.5 * math.cos(h), me["y"] + 1.5 * math.sin(h))

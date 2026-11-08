@@ -527,6 +527,44 @@ function walkRemote(r, s, t) {
   }
 }
 
+// A friend without a game of its own (the AI test friend) sets flag 4: "fight for me". On our mission its copy here
+// attacks the nearest mission ped that is not in our group; the damage is real because the copy lives in our game.
+function missionEnemies(me) {
+  const out = [];
+  if (!S.cleanup || !onMission()) return out;
+  for (let i = 0; i < S.cleanupCount; i++) {
+    const at = S.cleanup + i * S.cleanupStride;
+    if (Memory.ReadU8(at, false, true) !== 2) continue;
+    const h = Memory.ReadI32(at + 4, false, true);
+    try {
+      if (!Char.DoesExist(h)) continue;
+      const c = new Char(h);
+      if (c.getHealth() <= 0 || c.isInPlayersGroup(player)) continue;
+      if (me.isInAnyCar() && c.isInAnyCar() && +c.storeCarIsInNoSave() === +me.storeCarIsInNoSave()) continue;
+      out.push(c);
+    } catch (e) {}
+  }
+  return out;
+}
+
+function fightRemote(r, s, me, t) {
+  if (r.car) dropCar(r);
+  const at = r.ped.getCoordinates();
+  if (Math.sqrt(dist2(at, s)) > 30) return false; // too far from where it says it is: follow it instead
+  let best = null, bestD = 40 * 40;
+  for (const c of missionEnemies(me)) {
+    const d = dist2(at, c.getCoordinates());
+    if (d < bestD) { best = c; bestD = d; }
+  }
+  if (!best) { r.target = 0; return false; }
+  if (r.target !== +best || t - (r.lastFight || 0) > 3000) {
+    r.target = +best; r.lastFight = t;
+    try { r.ped.setObjKillCharOnFoot(best); log(`[vc-coop] friend copy attacks ${+best}`); } catch (e) { noteError(`fight: ${e}`); }
+  }
+  r.moving = true;
+  return true;
+}
+
 function downRemote(r, s, slot, me) {
   leaveCar(r, s);
   if (r.car) dropCar(r);
@@ -615,7 +653,7 @@ function syncRemotes(me, mySlot, t) {
       if (r.down) { r.down = false; try { r.ped.clearWaitState(); } catch (e) {} }
       if (s.inCar === 1) driveRemote(r, s, t);
       else if (s.inCar === 2) rideRemote(r, s, mySlot, me);
-      else walkRemote(r, s, t);
+      else if (!((s.flags & 4) && fightRemote(r, s, me, t))) walkRemote(r, s, t);
     } catch (e) {
       noteError(`sync ${slot}: ${e}`);
     }
@@ -951,6 +989,7 @@ function report(me, t) {
         else if (r.attached) c = "ext";
       }
     } catch (err) { noteError(`report ${slot}: ${err}`); }
+    if (r.target) c = `kova:${r.target}`;
     sendEvent(EV.REPORT, `F${slot} p=${p} e=${e.toFixed(1)} c=${c} ar=${r.area} dn=${r.down ? 1 : 0} w=${r.weapon || 0} nm=${t - (r.drawnAt || 0) < 1000 ? 1 : 0}`);
   }
   let hp = 0, inCar = 0;
