@@ -35,7 +35,7 @@ pub type Players = Arc<Mutex<Vec<String>>>;
 pub fn run_server(sock: UdpSocket, key: u32, players: Players) {
     let _ = sock.set_read_timeout(Some(Duration::from_millis(200)));
     let mut peers: [Option<Peer>; MAX_PLAYERS] = Default::default();
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 2048];
     loop {
         // drop the silent: a crashed game must not hold a seat
         for slot in 0..MAX_PLAYERS {
@@ -93,6 +93,11 @@ pub fn run_server(sock: UdpSocket, key: u32, players: Players) {
                 let mut out = vec![s as u8];
                 out.extend_from_slice(body);
                 broadcast(&sock, &peers, Some(s), &packet(EVENT, &out));
+            }
+            (ENTS, Some(s)) if !body.is_empty() && body.len() == 1 + body[0] as usize * ENT_SIZE && (body[0] as usize) <= MAX_ENTS => {
+                let mut out = vec![s as u8];
+                out.extend_from_slice(body);
+                broadcast(&sock, &peers, Some(s), &packet(ENTS, &out));
             }
             (LEAVE, Some(s)) => {
                 peers[s] = None;

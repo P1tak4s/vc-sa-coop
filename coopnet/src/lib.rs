@@ -26,6 +26,8 @@ struct Shared {
     names: [String; MAX_PLAYERS],
     events_out: Vec<Vec<u8>>,                       // kind + text, to send
     events_in: std::collections::VecDeque<Vec<u8>>, // kind + text, received
+    ents_out: Option<Vec<u8>>,                      // our latest mission entity batch (n + entries)
+    ents_in: Option<(Vec<u8>, Instant)>,            // the latest batch from a friend
 }
 
 fn shared() -> &'static Mutex<Shared> {
@@ -64,7 +66,8 @@ fn net_thread(sess: Session) {
     let join = packet(JOIN, &join);
     let mut last_join = Instant::now() - Duration::from_secs(5);
     let mut last_send = Instant::now();
-    let mut buf = [0u8; 512];
+    let mut last_ents = Instant::now();
+    let mut buf = [0u8; 2048];
 
     loop {
         let (status, mine, stop, revive) = {
@@ -77,6 +80,12 @@ fn net_thread(sess: Session) {
         if status == 2 {
             for ev in std::mem::take(&mut shared().lock().unwrap().events_out) {
                 let _ = sock.send_to(&packet(EVENT, &ev), sess.server);
+            }
+            if last_ents.elapsed() >= Duration::from_millis(200) {
+                if let Some(b) = shared().lock().unwrap().ents_out.take() {
+                    let _ = sock.send_to(&packet(ENTS, &b), sess.server);
+                }
+                last_ents = Instant::now();
             }
         }
         if stop {
@@ -116,6 +125,7 @@ fn net_thread(sess: Session) {
                 }
             }
             EVENT if body.len() >= 2 && s.events_in.len() < 32 => s.events_in.push_back(body[1..].to_vec()),
+            ENTS if body.len() >= 2 && body.len() == 2 + body[1] as usize * ENT_SIZE => s.ents_in = Some((body[1..].to_vec(), Instant::now())),
             NAMES if !body.is_empty() => {
                 for e in body[1..].chunks_exact(1 + NICK_LEN).take(body[0] as usize) {
                     if (e[0] as usize) < MAX_PLAYERS {
@@ -246,6 +256,32 @@ pub unsafe extern "C" fn coop_event_poll(out: *mut u8) -> i64 {
     ev[0] as i64
 }
 
+/// Our mission entities for the others: `n` entries of ENT_SIZE bytes at `data` (sent at 5 Hz, latest wins).
+#[no_mangle]
+pub unsafe extern "C" fn coop_ents_send(data: *const u8, n: i64) -> i64 {
+    if data.is_null() || !(0..=MAX_ENTS as i64).contains(&n) {
+        return 0;
+    }
+    let mut b = vec![n as u8];
+    b.extend_from_slice(std::slice::from_raw_parts(data, n as usize * ENT_SIZE));
+    shared().lock().unwrap().ents_out = Some(b);
+    1
+}
+
+/// A friend's latest mission entities into `out` (MAX_ENTS x ENT_SIZE bytes). Returns how many; -1 = none for 2 s.
+#[no_mangle]
+pub unsafe extern "C" fn coop_ents_get(out: *mut u8) -> i64 {
+    let s = shared().lock().unwrap();
+    match &s.ents_in {
+        Some((b, at)) if at.elapsed() < Duration::from_secs(2) && !out.is_null() => {
+            let n = b[0] as usize;
+            std::ptr::copy_nonoverlapping(b[1..].as_ptr(), out, n * ENT_SIZE);
+            n as i64
+        }
+        _ => -1,
+    }
+}
+
 fn car_file() -> Option<std::path::PathBuf> {
     let dir = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("sa-de-coop");
     std::fs::create_dir_all(&dir).ok()?;
@@ -331,7 +367,7 @@ fn steam_thread(host: bool, name: String, pw: String) {
     };
     log_line(&format!("steam: in lobby {lobby} as {}", st.me()));
 
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 2048];
     let mut members: Vec<u64> = vec![];
     let mut last_members = Instant::now() - Duration::from_secs(5);
     let mut last_send = Instant::now();
@@ -368,6 +404,11 @@ fn steam_thread(host: bool, name: String, pw: String) {
             }
             last_send = Instant::now();
         }
+        if let Some(b) = shared().lock().unwrap().ents_out.take() {
+            for to in members.iter().copied().filter(|&m| m != st.me()) {
+                st.send(to, &packet(ENTS, &b), steam::SEND_UNRELIABLE);
+            }
+        }
         for ev in std::mem::take(&mut shared().lock().unwrap().events_out) {
             let mut body = vec![my_slot.max(0) as u8];
             body.extend_from_slice(&ev);
@@ -394,6 +435,7 @@ fn steam_thread(host: bool, name: String, pw: String) {
                 }
                 REVIVE if body.len() == 2 && body[1] as i32 == s.slot => s.revived = true,
                 EVENT if body.len() >= 2 && s.events_in.len() < 32 => s.events_in.push_back(body[1..].to_vec()),
+                ENTS if !body.is_empty() && body.len() == 1 + body[0] as usize * ENT_SIZE => s.ents_in = Some((body.to_vec(), Instant::now())),
                 _ => {}
             }
         }
@@ -455,7 +497,8 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
             overlay::hook_menu();
             let hinst = hudhook::windows::Win32::Foundation::HINSTANCE(module as isize);
             // one renderer only (both hook the same Present). DX12 hooks installed but never drew on 11-08, so DX11
-            // is the default; %LOCALAPPDATA%\sa-de-coopenderer.txt = "dx12" switches without a rebuild.
+            // is the default; %LOCALAPPDATA%\sa-de-coop renderer.txt
+            // = "dx12" switches without a rebuild.
             let choice = std::env::var_os("LOCALAPPDATA")
                 .and_then(|d| std::fs::read_to_string(std::path::PathBuf::from(d).join("sa-de-coop").join("renderer.txt")).ok())
                 .unwrap_or_default();

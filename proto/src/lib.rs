@@ -14,7 +14,12 @@ pub const LEAVE: u8 = 5; // client -> server: (empty); server -> clients: slot u
 pub const EVENT: u8 = 8; // client -> server: kind u8 + ASCII text (<= 24); server -> clients: from slot u8 + same
 pub const EV_WEATHER: u8 = 1; // text: weather id
 pub const EV_CUTSCENE: u8 = 2; // text: cutscene name
+pub const EV_HIT: u8 = 4; // text: "<handle>:<damage>" for the mission owner
+pub const EV_MONEY: u8 = 5; // text: dollars earned in the mission just finished
 pub const EV_MISSION: u8 = 3; // text: mission script name ("" = mission over)
+pub const ENTS: u8 = 9; // mission entities of the sender's game: n u8 + n x ENT_SIZE (relayed with the sender slot first)
+pub const ENT_SIZE: usize = 28; // handle u32, kind u8 (1 car, 2 char), dead u8, model u16, x y z heading health f32
+pub const MAX_ENTS: usize = 40;
 pub const NAMES: u8 = 7; // server -> clients: n u8, then n x (slot u8, nick [16])
 pub const REVIVE: u8 = 6; // client -> server: target slot u8; server -> clients: from slot u8, target slot u8
 
