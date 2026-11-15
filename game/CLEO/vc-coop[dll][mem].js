@@ -233,6 +233,20 @@ function readRemote() {
   return s;
 }
 
+// Vehicles with flashing lights: fire truck, ambulance, FBI car, police, enforcer, police boat, FBI rancher, police
+// helicopter, police cheetah. The game loads their light blueprint only when it makes such a vehicle itself; the
+// first one made from this script crashed it (11-15, twice: "AssembleReferenceTokenStream for
+// BP_VehicleLight_Blinking(_Blue) called on a non-game thread"). So a copy of one is made only while the game has
+// one of its own in the world; otherwise it is left out, or a plain car stands in for it.
+const FLASHERS = new Set([137, 146, 147, 156, 157, 160, 220, 227, 236]);
+const PLAIN_CAR = 175; // Admiral
+function safeCarModel(model) {
+  if (!FLASHERS.has(model)) return true;
+  let found = false;
+  try { poolEach(A.vehPool, A.vehSize, (h, p) => { if (!found && Memory.ReadI16(p + S.modelIndex, false, false) === model) found = true; }); } catch (e) {}
+  return found;
+}
+
 // Never wait for a model. In the Definitive Edition a load can hold the game thread past CLEO's 2 s limit, and CLEO
 // then disposes the script (11-08, twice, right when the friend appeared). Ask once, use it on a later frame.
 const requestedAt = {};
@@ -405,9 +419,12 @@ function removeRemote(slot) {
 function driveRemote(r, s, now) {
   if (!r.car || r.carModel !== s.carModel || !carExists(r.car)) {
     dropCar(r);
-    if (s.carModel < 130 || s.carModel > 236 || !modelReady(s.carModel)) return; // the car appears when loaded
-    r.car = track(KIND.CAR, Car.Create(s.carModel, s.x, s.y, s.z));
-    Streaming.MarkModelAsNoLongerNeeded(s.carModel);
+    if (s.carModel < 130 || s.carModel > 236) return;
+    const use = safeCarModel(s.carModel) ? s.carModel : PLAIN_CAR; // r.carModel stays theirs, so it is not remade
+    if (!modelReady(use)) return; // the car appears when loaded
+    if (use !== s.carModel) log(`[vc-coop] friend's car ${s.carModel}: flashing lights not loaded here, a plain car stands in`);
+    r.car = track(KIND.CAR, Car.Create(use, s.x, s.y, s.z));
+    Streaming.MarkModelAsNoLongerNeeded(use);
     r.car.setProofs(true, true, true, true, true);
     if (s.flags & (1 << 31)) {
       try { r.car.changeColor((s.flags >>> 24) & 0x7f, (s.carHealth >>> 16) & 0x7f); } catch (e) { log(`[vc-coop] colour: ${e}`); }
@@ -966,7 +983,7 @@ function mirrorMissionEntities() {
         // special characters (109..129) only exist in the owner's game: a street look stands in for them
         const pedModel = model >= 109 && model <= 129 ? SKINS[0] : model;
         if (dead || !(kind === 2 ? pedModel > 0 && pedModel < 109 : model >= 130 && model <= 236)) continue;
-        const use = kind === 2 ? pedModel : model;
+        const use = kind === 2 ? pedModel : safeCarModel(model) ? model : PLAIN_CAR;
         if (!modelReady(use)) continue; // created on a later frame
         const ent = kind === 2 ? track(KIND.PED, Char.Create(18, use, x, y, z)) : track(KIND.CAR, Car.Create(use, x, y, z)); // 18: criminal
         Streaming.MarkModelAsNoLongerNeeded(use);
@@ -1355,7 +1372,7 @@ function updateWorldProxy(h, kind, model, drv, flags, c1, c2, s, me, t) {
   if (!p) {
     if (s.hp <= 0) return; // dead before we saw it
     if (kind === 1) {
-      if (model < 130 || model > 236 || !modelReady(model)) return;
+      if (model < 130 || model > 236 || !safeCarModel(model) || !modelReady(model)) return;
       if ((flags & 1) && !(drv > 0 && drv < 109 && modelReady(drv))) return;
       const car = track(KIND.CAR, Car.Create(model, s.x, s.y, s.z));
       Streaming.MarkModelAsNoLongerNeeded(model);
