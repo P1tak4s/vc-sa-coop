@@ -22,6 +22,32 @@ fn skin_names() -> &'static [&'static str; 8] {
     }
 }
 
+/// Name tags over friends' heads: the script projects the head to the 640 x 448 text screen each frame and hands the
+/// point over (the game's own text commands draw nothing from a CLEO script in the Definitive Edition).
+pub static TAGS: std::sync::Mutex<[Option<(f32, f32, bool, std::time::Instant)>; 4]> = std::sync::Mutex::new([None; 4]);
+
+fn draw_tags(ui: &Ui, font: Option<imgui::FontId>) {
+    let [dw, dh] = ui.io().display_size;
+    let tags = *TAGS.lock().unwrap();
+    let dl = ui.get_background_draw_list();
+    let _f = font.map(|f| ui.push_font(f));
+    for (slot, t) in tags.iter().enumerate() {
+        let Some((x, y, down, at)) = *t else { continue };
+        if at.elapsed() > std::time::Duration::from_millis(250) {
+            continue; // the script stopped sending it: out of view, gone or in another interior
+        }
+        let mut name = crate::peer_name(slot);
+        if name.is_empty() {
+            name = format!("Player{}", slot + 1);
+        }
+        let size = ui.calc_text_size(&name);
+        let p = [x / 640.0 * dw - size[0] / 2.0, y / 448.0 * dh - size[1]];
+        let col = if down { [1.0, 0.33, 0.33, 1.0] } else { [0.55, 0.85, 1.0, 1.0] };
+        dl.add_text([p[0] + 2.0, p[1] + 2.0], [0.0, 0.0, 0.0, 0.85], &name);
+        dl.add_text(p, col, &name);
+    }
+}
+
 pub fn toggle() {
     let was = OPEN.fetch_xor(true, Ordering::SeqCst);
     crate::log_line(&format!("F9: co-op menu {}", if was { "closed" } else { "opened" }));
@@ -109,6 +135,8 @@ impl ImguiRenderLoop for CoopMenu {
         if !RENDERED.swap(true, Ordering::SeqCst) {
             crate::log_line("overlay: first frame drawn");
         }
+        let fonts = ui.fonts().fonts().to_vec();
+        draw_tags(ui, if self.fonts_ok && fonts.len() >= 3 { Some(fonts[2]) } else { None });
         if !OPEN.load(Ordering::SeqCst) {
             return;
         }
@@ -117,7 +145,6 @@ impl ImguiRenderLoop for CoopMenu {
         ui.get_background_draw_list().add_rect([0.0, 0.0], [dw, dh], [0.0, 0.0, 0.0, 0.62]).filled(true).build();
         // where the game's options panel sits: right of the menu list
         let (x0, y0, w) = (dw * 0.30, dh * 0.33, dw * 0.62);
-        let fonts = ui.fonts().fonts().to_vec();
         let (row_font, tab_font, small_font) =
             if self.fonts_ok && fonts.len() >= 3 { (Some(fonts[0]), Some(fonts[1]), Some(fonts[2])) } else { (None, None, None) };
         let mut close = false;

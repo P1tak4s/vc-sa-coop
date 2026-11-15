@@ -242,6 +242,20 @@ pub unsafe extern "C" fn coop_name(slot: i64, out: *mut u8, max: i64) -> i64 {
     len as i64
 }
 
+pub fn peer_name(slot: usize) -> String {
+    shared().lock().unwrap().names.get(slot).cloned().unwrap_or_default()
+}
+
+/// A name tag for `slot` this frame at (x10, y10) / 10 on the game's 640 x 448 text screen; down = red.
+#[no_mangle]
+pub extern "C" fn coop_tag(slot: i64, x10: i64, y10: i64, down: i64) -> i64 {
+    if !(0..MAX_PLAYERS as i64).contains(&slot) {
+        return 0;
+    }
+    overlay::TAGS.lock().unwrap()[slot as usize] = Some((x10 as f32 / 10.0, y10 as f32 / 10.0, down != 0, std::time::Instant::now()));
+    1
+}
+
 /// Queue an event for the others: kind (EV_*) and an ASCII text (null-terminated, up to 24 bytes).
 #[no_mangle]
 pub unsafe extern "C" fn coop_event_send(kind: i64, text: *const u8) -> i64 {

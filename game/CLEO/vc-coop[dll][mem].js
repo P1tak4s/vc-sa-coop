@@ -22,7 +22,7 @@ try {
   for (const name of ["coop_start", "coop_code", "coop_status", "coop_slot", "coop_send", "coop_get", "coop_revive",
                       "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send",
                       "coop_ents_get", "coop_is_host", "coop_my_skin", "coop_set_partner", "coop_warp_passenger",
-                      "coop_track", "coop_forget", "coop_take_tracked"]) {
+                      "coop_track", "coop_forget", "coop_take_tracked", "coop_tag"]) {
     api[name] = Memory.Fn.X64(lib.getProcedure(name));
   }
 } catch (e) {
@@ -203,13 +203,9 @@ function drawNames() {
     head.z += 1.1;
     const at = toScreen(head);
     if (!at) continue;
-    const key = nameKey(slot, r);
+    // the overlay in coopnet64.asi draws it: Text.Display from a CLEO script shows nothing in the DE (11-15)
     try {
-      Text.UseCommands(true);
-      Text.SetScale(0.35, 1.4);
-      Text.SetCenter(true);
-      Text.SetColor(r.down ? 255 : 120, r.down ? 80 : 200, r.down ? 80 : 255, 255);
-      Text.Display(at.x, at.y, key);
+      api.coop_tag(slot, Math.round(at.x * 10), Math.round(at.y * 10), r.down ? 1 : 0);
       r.drawnAt = Date.now();
     } catch (e) {
       if (!r.drawErr) { r.drawErr = true; log(`[vc-coop] draw name: ${e}`); }
@@ -396,16 +392,14 @@ function driveRemote(r, s, now) {
     leaveCar(r, s);
     r.ped.warpIntoCar(r.car);
     setArea(carPtr(r.car), r.area < 0 ? 0 : r.area);
-    r.rx = null;
+    r.rx = null; r.noAi = false;
   }
   const cp = carPtr(r.car);
   if (!cp) return;
   // a new packet: remember where and when, and how fast it moved since the last one
   if (r.rx === null || s.x !== r.rx || s.y !== r.ry || s.z !== r.rz) {
-    if (r.rx !== null && now > r.rt) {
-      const dt = (now - r.rt) / 1000;
-      r.vx = (s.x - r.rx) / dt; r.vy = (s.y - r.ry) / dt; r.vz = (s.z - r.rz) / dt;
-    } else { r.vx = s.vx; r.vy = s.vy; r.vz = s.vz; }
+    // the sender's own car velocity: packet-to-packet deltas spike when Steam delivers two at once
+    r.vx = s.vx; r.vy = s.vy; r.vz = s.vz;
     r.rx = s.x; r.ry = s.y; r.rz = s.z; r.rt = now;
   }
   const ahead = Math.min((now - r.rt) / 1000, 0.3);
@@ -415,31 +409,18 @@ function driveRemote(r, s, now) {
   const err = Math.sqrt(ex * ex + ey * ey + ez * ez);
   const speed = Math.sqrt(r.vx * r.vx + r.vy * r.vy);
   quatToMatrix(cp, { x: s.qx, y: s.qy, z: s.qz, w: s.qw });
-  const fx = 2 * (s.qx * s.qy - s.qw * s.qz), fy = 1 - 2 * (s.qx * s.qx + s.qz * s.qz);
-  const sign = r.vx * fx + r.vy * fy < 0 ? -1 : 1; // moving against where it faces: reverse
-  if (err > 2) {
-    r.car.setCoordinates(tx, ty, tz); // too far off: put it where it should be
+  if (!r.noAi) { try { r.car.setMission(0); } catch (e) {} r.noAi = true; }
+  if (err > 8 + speed * 0.3) {
+    r.car.setCoordinates(tx, ty, tz); // far off (a jump, a respawn): put it where it should be
     placeAt(cp, tx, ty, tz);
     quatToMatrix(cp, { x: s.qx, y: s.qy, z: s.qz, w: s.qw });
-    r.car.setForwardSpeed(sign * speed);
-    return;
+  } else {
+    // pull a share of the gap every frame: no jumps from packet jitter (11-15: "lags a lot" while driving)
+    placeAt(cp, c.x + ex * 0.25, c.y + ey * 0.25, c.z + ez * 0.25);
   }
-  // close enough: the game's physics drives it (wheels turn); catch up or fall back through the speed
-  let along = 0;
-  if (speed > 0.5) along = (ex * r.vx + ey * r.vy) / speed;
-  r.car.setForwardSpeed(sign * Math.max(0, speed + along * 1.5));
-  // a driver with nothing to do brakes: give it a drive towards a point ahead
-  if (now - (r.lastDrive || 0) > 300) {
-    r.lastDrive = now;
-    try {
-      if (speed > 0.5 && sign > 0) {
-        r.car.setCruiseSpeed(Math.max(10, speed * 3.6));
-        r.car.gotoCoordinatesAccurate(tx + fx * 25, ty + fy * 25, tz);
-      } else {
-        r.car.setMission(0); // standing or reversing: no AI driving
-      }
-    } catch (e) {}
-  }
+  // the game's own velocity (units per 1/50 s): physics moves it between our corrections, wheels turn
+  const k = 1 / 50, gain = 1.2;
+  writeVec(cp + E.moveSpeed, { x: (r.vx + ex * gain) * k, y: (r.vy + ey * gain) * k, z: (r.vz + ez * gain) * k });
 }
 
 function rideRemote(r, s, mySlot, me) {
@@ -527,8 +508,26 @@ function detachExtra(ped) {
   try { ped.detachFromCar(); } catch (e) {}
 }
 
+// Out of a car: first the copy gets out, only on a later frame the car is let go (parked, the game clears it later).
+// Deleting it in the same frame took the copy along (11-15: the friend vanished every time he left a car).
+function releaseCar(r, s) {
+  try {
+    if (r.ped.isInAnyCar()) { r.ped.warpFromCarToCoord(s.x, s.y, s.z); return false; }
+  } catch (e) {}
+  try {
+    if (carExists(r.car)) {
+      r.car.setMission(0);
+      forget(KIND.CAR, r.car);
+      r.car.markAsNoLongerNeeded();
+    }
+  } catch (e) { log(`[vc-coop] release car: ${e}`); }
+  r.car = null; r.carModel = 0; r.rx = null;
+  log("[vc-coop] friend left the car");
+  return true;
+}
+
 function walkRemote(r, s, t) {
-  if (r.car) dropCar(r);
+  if (r.car && !releaseCar(r, s)) return;
   leaveCar(r, s);
   if (!r.lastPos) { r.lastPos = { x: s.x, y: s.y }; r.lastT = t; r.speed = 0; r.ux = 0; r.uy = 0; }
   const mx = s.x - r.lastPos.x, my = s.y - r.lastPos.y, m = Math.sqrt(mx * mx + my * my);
