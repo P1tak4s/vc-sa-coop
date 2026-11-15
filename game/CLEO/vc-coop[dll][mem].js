@@ -240,9 +240,10 @@ function remoteWithCar(car) {
 }
 
 // ---- our state ------------------------------------------------------------------------------------------
+let colorErr = false;
 function writeMine(me) {
   const p = me.getCoordinates();
-  let v = { x: 0, y: 0, z: 0 }, q = { x: 0, y: 0, z: 0, w: 1 }, carSpeed = 0, inCar = 0, carModel = 0, carHealth = 0;
+  let v = { x: 0, y: 0, z: 0 }, q = { x: 0, y: 0, z: 0, w: 1 }, carSpeed = 0, inCar = 0, carModel = 0, carHealth = 0, carColors = 0;
   if (riding && carExists(riding.car)) {
     const c = riding.car.getCoordinates();
     p.x = c.x; p.y = c.y; p.z = c.z;
@@ -263,6 +264,12 @@ function writeMine(me) {
       inCar = 1;
       carModel = car.getModel();
       carHealth = car.getHealth();
+      // colours ride along: primary in flags bits 24..30, secondary in carHealth bits 16..22 (11-15: "always random")
+      try {
+        const cc = Object.values(car.getColors());
+        carColors = ((cc[0] & 0x7f) << 24) | 1 << 31 >>> 0;
+        carHealth = (carHealth & 0xffff) | ((cc[1] & 0x7f) << 16);
+      } catch (e) { if (!colorErr) { colorErr = true; log(`[vc-coop] car colours: ${e}`); } }
     }
   } else {
     const pp = pedPtr(me);
@@ -282,6 +289,7 @@ function writeMine(me) {
   try { if (me.isShooting()) flags |= 2; } catch (e) {}
   try { flags |= Math.min(6, player.storeWantedLevel()) << 8; } catch (e) {}
   try { flags |= (api.coop_my_skin() & 0xff) << 16; } catch (e) {}
+  if (carColors) flags = (flags & 0xffffff) | ((carColors >>> 24) & 0x7f) << 24 | (1 << 31);
   Memory.WriteI32(mine + I.weapon, weapon, false, false);
   Memory.WriteI32(mine + I.flags, flags, false, false);
   api.coop_send(mine);
@@ -388,6 +396,9 @@ function driveRemote(r, s, now) {
     r.car = track(KIND.CAR, Car.Create(s.carModel, s.x, s.y, s.z));
     Streaming.MarkModelAsNoLongerNeeded(s.carModel);
     r.car.setProofs(true, true, true, true, true);
+    if (s.flags & (1 << 31)) {
+      try { r.car.changeColor((s.flags >>> 24) & 0x7f, (s.carHealth >>> 16) & 0x7f); } catch (e) { log(`[vc-coop] colour: ${e}`); }
+    }
     r.carModel = s.carModel;
     leaveCar(r, s);
     r.ped.warpIntoCar(r.car);
