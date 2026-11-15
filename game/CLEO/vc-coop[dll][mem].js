@@ -404,6 +404,7 @@ function driveRemote(r, s, now) {
     r.ped.warpIntoCar(r.car);
     setArea(carPtr(r.car), r.area < 0 ? 0 : r.area);
     r.rx = null; r.noAi = false;
+    log(`[vc-coop] friend's car ${s.carModel} created: handle ${+r.car}, exists ${carExists(r.car)}`);
   }
   const cp = carPtr(r.car);
   if (!cp) return;
@@ -702,6 +703,12 @@ function syncRemotes(me, mySlot, t) {
       if (s.health >= 0) armRemote(r, s);
       if (s.health < 0) { downRemote(r, s, slot, me); continue; }
       if (r.down) { r.down = false; try { r.ped.clearWaitState(); } catch (e) {} }
+      if (t - (r.diagAt || 0) > 5000) { // what the copy is doing, for logs sent back after a test (11-15)
+        r.diagAt = t;
+        let inCar = "?"; try { inCar = r.ped.isInAnyCar(); } catch (e) {}
+        const p = r.ped.getCoordinates();
+        log(`[vc-coop] diag ${slot}: their inCar ${s.inCar} model ${s.carModel}, copy car ${r.car ? +r.car : 0} exists ${r.car ? carExists(r.car) : "-"}, ped in car ${inCar}, off ${Math.sqrt(dist2(p, s)).toFixed(1)} m, area ${r.area}/${currentArea()}`);
+      }
       if (s.inCar === 1) driveRemote(r, s, t);
       else if (s.inCar === 2) rideRemote(r, s, mySlot, me);
       else if (!((s.flags & 4) && fightRemote(r, s, me, t))) walkRemote(r, s, t);
@@ -990,7 +997,7 @@ function onMissionEvent(kind, text) {
 }
 
 // ---- one story for both: the host plays the story, the guest joins it ------------------------------------------
-// The guest's own missions are refused in the DLL (CAN_PLAYER_START_MISSION answers no). The host sends its mission
+// Since 11-15 the guest may also play its own missions (a new game had no way to save). The host sends its mission
 // text (GXT key, so the guest reads it in its own language) and its destination blips.
 const EVS = { TEXT: 6, BLIPS: 7 };
 let lastBriefKey = "", lastBlipsSent = "", lastBlipsAt = 0;

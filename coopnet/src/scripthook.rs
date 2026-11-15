@@ -52,8 +52,10 @@ unsafe fn set_ip(s: *mut u8, at: usize, wide: bool, v: usize) {
 }
 
 /// The game should not start a mission here: the guest plays the host's story, the host waits for its partner.
+/// 11-15: the guest may start its own missions again. Refusing them left a friend on a new game stuck: VC has no save
+/// house before the first mission, so he could neither save nor play.
 fn refuse_mission_start() -> bool {
-    connected() && (!crate::is_host() || PARTNER_PED.load(Ordering::Relaxed) > 0 && !PARTNER_NEAR.load(Ordering::Relaxed))
+    connected() && crate::is_host() && PARTNER_PED.load(Ordering::Relaxed) > 0 && !PARTNER_NEAR.load(Ordering::Relaxed)
 }
 
 unsafe extern "C" fn wrap(s: *mut u8, op: u32) -> u8 {
@@ -104,10 +106,7 @@ unsafe extern "C" fn wrap(s: *mut u8, op: u32) -> u8 {
 
 unsafe extern "C" fn can_start(ped: *mut u8) -> u8 {
     if connected() {
-        if !crate::is_host() {
-            return 0; // the guest plays the host's story, never its own
-        }
-        if PARTNER_PED.load(Ordering::Relaxed) > 0 && !PARTNER_NEAR.load(Ordering::Relaxed) {
+        if crate::is_host() && PARTNER_PED.load(Ordering::Relaxed) > 0 && !PARTNER_NEAR.load(Ordering::Relaxed) {
             return 0; // the host waits in the marker until the partner is there too
         }
     }
