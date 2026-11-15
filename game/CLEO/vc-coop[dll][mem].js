@@ -22,7 +22,7 @@ try {
   for (const name of ["coop_start", "coop_code", "coop_status", "coop_slot", "coop_send", "coop_get", "coop_revive",
                       "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send",
                       "coop_ents_get", "coop_is_host", "coop_my_skin", "coop_set_partner", "coop_warp_passenger",
-                      "coop_track", "coop_forget", "coop_take_tracked", "coop_tag"]) {
+                      "coop_track", "coop_forget", "coop_take_tracked", "coop_tag", "coop_hud", "coop_note"]) {
     api[name] = Memory.Fn.X64(lib.getProcedure(name));
   }
 } catch (e) {
@@ -120,17 +120,25 @@ const COWER = 15;                   // WaitState PlayAnimCower: how a downed pla
 // weapon id -> model (data/weapon.dat of VC)
 const WEAPON_MODEL = [-1, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 270, 271, 272, 273, 274, 275, 277,
                       278, 279, 281, 282, 283, 284, 280, 276, 285, 286, 287, 288, 289, 290, 291, 289, 292];
-try {
-  FxtStore.insert("COOPDN1", "YOU ARE DOWN! Your friend can revive you: ~1~ s");
-  FxtStore.insert("COOPDN2", "FRIEND IS DOWN! Revive them: ~1~ s");
-  FxtStore.insert("COOPDN3", "Hold E to revive: ~1~ %");
-} catch (e) {}
+// Big lines in the middle of the screen, drawn by the overlay in coopnet64.asi (the game's text commands draw
+// nothing from a CLEO script in the Definitive Edition, 11-15). Call every frame the line should stay.
+const hudBuf = Memory.Allocate(128);
+const BANNERS = {
+  COOPDN1: ["YOU ARE DOWN! Your friend can revive you: ~1~ s", 1],
+  COOPDN2: ["YOUR FRIEND IS DOWN! Go to them: ~1~ s", 1],
+  COOPDN3: ["Hold E to revive: ~1~ %", 2],
+};
+function writeAscii(buf, text, max) {
+  const n = Math.min(text.length, max - 1);
+  for (let i = 0; i < n; i++) { const c = text.charCodeAt(i); Memory.WriteU8(buf + i, c < 128 ? c : 63, false, false); }
+  Memory.WriteU8(buf + n, 0, false, false);
+}
+function hud(line, text, color) {
+  try { writeAscii(hudBuf, text, 128); api.coop_hud(line, hudBuf, color); } catch (e) {}
+}
 function banner(key, num, y) {
-  try {
-    Text.UseCommands(true); Text.SetScale(0.5, 2.0); Text.SetCenter(true);
-    Text.SetColor(255, 80, 80, 255);
-    Text.DisplayWithNumber(320, y || 30, key, Math.max(0, Math.ceil(num)));
-  } catch (e) {}
+  const [text, color] = BANNERS[key];
+  hud(y ? 1 : 0, text.replace("~1~", String(Math.max(0, Math.ceil(num)))), color);
 }
 
 const player = new Player(0);
@@ -138,7 +146,11 @@ const remotes = [null, null, null, null];
 let downed = false, downedAt = 0;
 
 // ---- small helpers ------------------------------------------------------------------------------------
-function say(text) { try { showTextBox(text); } catch (e) {} log(`[vc-coop] ${text}`); }
+function say(text) {
+  try { showTextBox(text); } catch (e) {}
+  try { writeAscii(hudBuf, text.replace(/^VC Co-op: /, ""), 128); api.coop_note(hudBuf); } catch (e) {}
+  log(`[vc-coop] ${text}`);
+}
 
 const keyWas = {};
 function pressed(code) { // true once per press
@@ -637,9 +649,12 @@ function downRemote(r, s, slot, me) {
       if (pct >= 100) { api.coop_revive(slot); r.holdStart = 0; }
     } else {
       r.holdStart = 0;
-      banner("COOPDN3", 0, 60);
+      hud(1, "Hold E to revive your friend", 2);
     }
-  } else r.holdStart = 0;
+  } else {
+    r.holdStart = 0;
+    if (!downed) hud(1, `Your friend is ${Math.round(Math.sqrt(dist2(me.getCoordinates(), r.ped.getCoordinates())))} m away`, 2);
+  }
 }
 
 // their gun in their copy's hands (VC has no "shoot at a point" for peds: shots are not shown yet)
@@ -737,6 +752,22 @@ function tryRideAlong(me) {
     riding = { car: best.car, slot: bestSlot };
     say(`VC Co-op: no free seats, riding ${where}. F - get off`);
   } catch (e) { noteError(`extra seat G: ${e}`); }
+}
+
+// Which key does what, shown while it applies (11-15: "which letter do I press")
+function keyHints(me) {
+  if (downed) return;
+  if (riding) { hud(2, "F - get off your friend's car", 0); return; }
+  if (me.isInAnyCar()) {
+    let mineHasFriend = false;
+    try { const car = me.storeCarIsInNoSave(); mineHasFriend = remoteWithCar(car) >= 0; } catch (e) {}
+    if (mineHasFriend) hud(2, "F - get out", 0);
+    return;
+  }
+  const p = me.getCoordinates();
+  for (const r of remotes) {
+    if (r && r.car && carExists(r.car) && !r.down && dist2(p, r.car.getCoordinates()) < 7 * 7) { hud(2, "G - get in your friend's car", 0); return; }
+  }
 }
 
 function stopRiding(me) {
@@ -1145,6 +1176,7 @@ while (true) {
   retryTick(me, t);
   trace("done"); tracedTicks++;
   if (riding && (!carExists(riding.car) || downed)) stopRiding(me);
+  keyHints(me);
   if (pressed(KEY.G) && !riding) tryRideAlong(me);
   if (riding && pressed(KEY.F)) { stopRiding(me); continue; }
   // F in a friend's car: straight out beside it (the car is moved every frame, which breaks the exit animation)

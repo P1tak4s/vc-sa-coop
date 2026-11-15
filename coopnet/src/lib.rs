@@ -256,6 +256,24 @@ pub extern "C" fn coop_tag(slot: i64, x10: i64, y10: i64, down: i64) -> i64 {
     1
 }
 
+/// A HUD line this frame: line 0..2, ASCII text, colour 0 = white, 1 = red, 2 = yellow, 3 = green.
+#[no_mangle]
+pub unsafe extern "C" fn coop_hud(line: i64, text: *const u8, color: i64) -> i64 {
+    if !(0..3).contains(&line) {
+        return 0;
+    }
+    let col = match color { 1 => [1.0, 0.35, 0.35, 1.0], 2 => [1.0, 0.85, 0.3, 1.0], 3 => [0.45, 1.0, 0.5, 1.0], _ => [1.0, 1.0, 1.0, 1.0] };
+    overlay::HUD.lock().unwrap()[line as usize] = Some((c_str(text), col, std::time::Instant::now()));
+    1
+}
+
+/// A 4-second message under the HUD lines.
+#[no_mangle]
+pub unsafe extern "C" fn coop_note(text: *const u8) -> i64 {
+    *overlay::NOTE.lock().unwrap() = Some((c_str(text), std::time::Instant::now()));
+    1
+}
+
 /// Queue an event for the others: kind (EV_*) and an ASCII text (null-terminated, up to 24 bytes).
 #[no_mangle]
 pub unsafe extern "C" fn coop_event_send(kind: i64, text: *const u8) -> i64 {

@@ -206,7 +206,7 @@ impl App {
             which,
             games,
             graphics: 2,
-            handling: true,
+            handling: false, // 11-15: off by default, the tuned cars felt slow and loose in the first real test
             reshade: true,
             work: Arc::new(Mutex::new(Work::Idle)),
             log: Arc::new(Mutex::new(vec![])),

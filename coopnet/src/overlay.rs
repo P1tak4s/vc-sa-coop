@@ -48,6 +48,38 @@ fn draw_tags(ui: &Ui, font: Option<imgui::FontId>) {
     }
 }
 
+/// Big lines in the middle of the screen (down / revive countdowns, key hints): line, text, colour, until.
+/// The script refreshes a line every frame it wants it; a line not refreshed for 250 ms disappears.
+pub static HUD: std::sync::Mutex<[Option<(String, [f32; 4], std::time::Instant)>; 3]> = std::sync::Mutex::new([None, None, None]);
+/// A short message (4 s) under the HUD lines: what showTextBox would say.
+pub static NOTE: std::sync::Mutex<Option<(String, std::time::Instant)>> = std::sync::Mutex::new(None);
+
+fn draw_hud(ui: &Ui, font: Option<imgui::FontId>) {
+    let [dw, dh] = ui.io().display_size;
+    let dl = ui.get_foreground_draw_list();
+    let _f = font.map(|f| ui.push_font(f));
+    let line_h = ui.text_line_height() * 1.3;
+    let draw = |i: usize, text: &str, col: [f32; 4]| {
+        let size = ui.calc_text_size(text);
+        let p = [(dw - size[0]) / 2.0, dh * 0.18 + line_h * i as f32];
+        dl.add_rect([p[0] - 14.0, p[1] - 6.0], [p[0] + size[0] + 14.0, p[1] + size[1] + 6.0], [0.0, 0.0, 0.0, 0.55]).filled(true).rounding(6.0).build();
+        dl.add_text(p, col, text);
+    };
+    let hud = HUD.lock().unwrap().clone();
+    for (i, l) in hud.iter().enumerate() {
+        if let Some((text, col, at)) = l {
+            if at.elapsed() < std::time::Duration::from_millis(250) {
+                draw(i, text, *col);
+            }
+        }
+    }
+    if let Some((text, at)) = NOTE.lock().unwrap().clone() {
+        if at.elapsed() < std::time::Duration::from_secs(4) {
+            draw(3, &text, [1.0, 1.0, 1.0, 1.0]);
+        }
+    }
+}
+
 pub fn toggle() {
     let was = OPEN.fetch_xor(true, Ordering::SeqCst);
     crate::log_line(&format!("F9: co-op menu {}", if was { "closed" } else { "opened" }));
@@ -137,6 +169,7 @@ impl ImguiRenderLoop for CoopMenu {
         }
         let fonts = ui.fonts().fonts().to_vec();
         draw_tags(ui, if self.fonts_ok && fonts.len() >= 3 { Some(fonts[2]) } else { None });
+        draw_hud(ui, if self.fonts_ok && fonts.len() >= 2 { Some(fonts[0]) } else { None });
         if !OPEN.load(Ordering::SeqCst) {
             return;
         }
