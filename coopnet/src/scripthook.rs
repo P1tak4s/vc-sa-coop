@@ -67,6 +67,9 @@ unsafe extern "C" fn wrap(s: *mut u8, op: u32) -> u8 {
     let cond = *s.add(s_cond);
     let logic = *(s.add(s_logic) as *const u16);
     let not = *s.add(s_not);
+    if CUT_OPS.contains(&op) && connected() && crate::is_host() {
+        capture_cutscene(op, ip as usize);
+    }
     let r = f(s, op);
     if op == g.start_mission_op && op != 0 && UPDATE_COMPARE != 0 && refuse_mission_start() {
         // undo the game's answer, then give "no" the way the game would (it applies NOT and AND/OR itself)
@@ -102,6 +105,110 @@ unsafe extern "C" fn wrap(s: *mut u8, op: u32) -> u8 {
         return r2;
     }
     r
+}
+
+// ---- the host's cutscene for the guest (11-15) -----------------------------------------------------------------
+// A Vice City cutscene is built by its mission script: special models, objects, their animations, then START.
+// The host reads those commands' parameters from the script code as they run and sends them as events (kind 12);
+// the guest's script repeats them. Parameter encoding (main.scm): 1 int32, 2 global var u16, 3 local var u16,
+// 4 int8, 5 int16, 6 float32; text labels are 8 raw bytes.
+pub const EV_CUT: u8 = 12;
+const CUT_OPS: [u32; 8] = [0x244, 0x2E4, 0x2E5, 0x2E6, 0x2E7, 0x2F3, 0x2F4, 0x2F5];
+static CUT_VARS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new()); // object index = position
+
+unsafe fn code_at(ip: usize) -> *const u8 {
+    (BASE + crate::game::current().script_space + ip) as *const u8
+}
+
+/// One numeric parameter at `ip`: (value, var key for type 2/3, bytes used). Local variables: value unknown.
+unsafe fn param(ip: usize) -> Option<(f64, u32, usize)> {
+    let c = code_at(ip);
+    let t = *c;
+    let rd = |n: usize| std::slice::from_raw_parts(c.add(1), n);
+    Some(match t {
+        1 => (i32::from_le_bytes(rd(4).try_into().ok()?) as f64, 0, 5),
+        2 | 3 => {
+            let off = u16::from_le_bytes(rd(2).try_into().ok()?);
+            let val = if t == 2 { *(code_at(off as usize) as *const i32) as f64 } else { f64::NAN };
+            (val, (t as u32) << 16 | off as u32, 3)
+        }
+        4 => (*(c.add(1) as *const i8) as f64, 0, 2),
+        5 => (i16::from_le_bytes(rd(2).try_into().ok()?) as f64, 0, 3),
+        6 => (f32::from_le_bytes(rd(4).try_into().ok()?) as f64, 0, 5),
+        _ => return None,
+    })
+}
+
+unsafe fn label(ip: usize) -> String {
+    let b = std::slice::from_raw_parts(code_at(ip), 8);
+    b.iter().take_while(|&&c| c != 0).filter(|c| c.is_ascii_graphic()).map(|&c| c as char).collect()
+}
+
+unsafe fn capture_cutscene(op: u32, ip: usize) {
+    let send = |t: String| {
+        crate::log_line(&format!("cutscene: {t}"));
+        crate::queue_event(EV_CUT, &t);
+    };
+    let obj_index = |key: u32| CUT_VARS.lock().unwrap().iter().position(|&k| k == key);
+    match op {
+        0x2F3 => {
+            // LOAD_SPECIAL_CUTSCENE_MODEL slot name
+            if let Some((slot, _, n)) = param(ip) {
+                send(format!("M:{}:{}", slot as i32, label(ip + n)));
+            }
+        }
+        0x2E4 => {
+            CUT_VARS.lock().unwrap().clear();
+            send(format!("L:{}", label(ip)));
+        }
+        0x244 => {
+            // SET_CUTSCENE_OFFSET x y z
+            let mut at = ip;
+            let mut v = [0.0; 3];
+            for x in v.iter_mut() {
+                let Some((val, _, n)) = param(at) else { return };
+                *x = val;
+                at += n;
+            }
+            send(format!("F:{:.2}:{:.2}:{:.2}", v[0], v[1], v[2]));
+        }
+        0x2E5 => {
+            // CREATE_CUTSCENE_OBJECT model -> var
+            if let Some((model, _, n)) = param(ip) {
+                if let Some((_, key, _)) = param(ip + n) {
+                    let mut vars = CUT_VARS.lock().unwrap();
+                    vars.push(key);
+                    let i = vars.len() - 1;
+                    drop(vars);
+                    send(format!("O:{i}:{}", model as i32));
+                }
+            }
+        }
+        0x2E6 | 0x2F5 => {
+            // SET_CUTSCENE_ANIM / SET_CUTSCENE_HEAD_ANIM obj anim
+            if let Some((_, key, n)) = param(ip) {
+                if let Some(i) = obj_index(key) {
+                    send(format!("{}:{i}:{}", if op == 0x2E6 { "A" } else { "B" }, label(ip + n)));
+                }
+            }
+        }
+        0x2F4 => {
+            // CREATE_CUTSCENE_HEAD obj model -> var
+            if let Some((_, owner, n1)) = param(ip) {
+                if let (Some(o), Some((model, _, n2))) = (obj_index(owner), param(ip + n1)) {
+                    if let Some((_, key, _)) = param(ip + n1 + n2) {
+                        let mut vars = CUT_VARS.lock().unwrap();
+                        vars.push(key);
+                        let i = vars.len() - 1;
+                        drop(vars);
+                        send(format!("H:{i}:{o}:{}", model as i32));
+                    }
+                }
+            }
+        }
+        0x2E7 => send("S".into()),
+        _ => {}
+    }
 }
 
 unsafe extern "C" fn can_start(ped: *mut u8) -> u8 {

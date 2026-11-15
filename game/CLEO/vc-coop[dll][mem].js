@@ -22,7 +22,8 @@ try {
   for (const name of ["coop_start", "coop_code", "coop_status", "coop_slot", "coop_send", "coop_get", "coop_revive",
                       "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send",
                       "coop_ents_get", "coop_is_host", "coop_my_skin", "coop_set_partner", "coop_warp_passenger",
-                      "coop_track", "coop_forget", "coop_take_tracked", "coop_tag", "coop_hud", "coop_note"]) {
+                      "coop_track", "coop_forget", "coop_take_tracked", "coop_tag", "coop_hud", "coop_note",
+                      "coop_world_send", "coop_world_get", "coop_flag"]) {
     api[name] = Memory.Fn.X64(lib.getProcedure(name));
   }
 } catch (e) {
@@ -673,9 +674,16 @@ function armRemote(r, s) {
 }
 
 // notoriety is shared: if a friend has more stars, we get them too (never lowered here)
-function shareWanted(s) {
-  const theirs = (s.flags >> 8) & 0xff;
-  try { if (theirs > player.storeWantedLevel()) player.alterWantedLevel(theirs); } catch (e) {}
+// Only changes travel: a friend's stars going up raise ours, a friend losing them all clears ours. Copying the level
+// every frame kept giving back the stars the other had just lost (11-15: "can't escape the cops").
+function shareWanted(r, s) {
+  const theirs = (s.flags >> 8) & 0xff, before = r.wanted === undefined ? theirs : r.wanted;
+  r.wanted = theirs;
+  try {
+    const mine = player.storeWantedLevel();
+    if (theirs > before && theirs > mine) player.alterWantedLevel(theirs);
+    else if (theirs === 0 && before > 0 && mine > 0) player.clearWantedLevel();
+  } catch (e) {}
 }
 
 // the lowest slot keeps time for everyone; a jump of more than 2 minutes is corrected
@@ -714,7 +722,7 @@ function syncRemotes(me, mySlot, t) {
     try {
       followArea(r, s);
       if (slot < mySlot || mySlot < 0) followClock(s.clock);
-      shareWanted(s);
+      shareWanted(r, s);
       if (s.health >= 0) armRemote(r, s);
       if (s.health < 0) { downRemote(r, s, slot, me); continue; }
       if (r.down) { r.down = false; try { r.ped.clearWaitState(); } catch (e) {} }
@@ -874,8 +882,9 @@ function hearWorld() {
     else if (kind === EV.CUTSCENE) { heard.cut = text; say(`VC Co-op: your friend is watching a cutscene (${text})`); }
     else if (kind === 4 || kind === 5) onMissionEvent(kind, text);
     else if (kind === 6 || kind === 7) onStoryEvent(kind, text);
+    else if (kind === EVW.HIT || kind === EVW.TAKE) onWorldEvent(kind, text);
+    else if (kind === EV_CUT) onCutEvent(text);
     else if (kind === EV.MISSION) { heard.mission = text || "-"; say(text ? `VC Co-op: your friend started a mission (${text})` : "VC Co-op: your friend's mission ended"); }
-    // a friend's cutscene is told, not replayed: a Vice City cutscene needs the objects its mission script creates
   }
 }
 
@@ -883,7 +892,7 @@ function hearWorld() {
 const ENT_SIZE = 28, MAX_ENTS = 40;
 const entBuf = Memory.Allocate(ENT_SIZE * MAX_ENTS);
 const EVM = { HIT: 4, MONEY: 5 };
-let missionMoneyAt = null, lastEntsAt = 0, passedAt = "";
+let missionMoneyAt = null, lastEntsAt = 0, passedAt = "", missionDiagAt = 0;
 const proxies = new Map(); // owner handle -> { kind, ent, model, blip, setHp }
 
 function ownMissionEntities() {
@@ -999,10 +1008,18 @@ function missionsTick(t) {
   if (t - lastEntsAt < 200) return;
   lastEntsAt = t;
   storyTick(t);
-  if (onMission() && !isGuest()) {
+  if (isGuest()) {
+    // the host's mission always shows here, also when the guest's own game thinks it is on a mission (11-15: the
+    // friend on a new game saw nothing of the host's missions)
+    mirrorMissionEntities();
+    if (t - (missionDiagAt || 0) > 10000) { missionDiagAt = t; log(`[vc-coop] mission copies here: ${proxies.size}`); }
+    return;
+  }
+  for (const h of [...proxies.keys()]) dropProxy(h); // the host keeps no copies
+  if (onMission()) {
     if (missionMoneyAt === null && S.money) { missionMoneyAt = Memory.ReadI32(S.money, false, true); passedAt = S.lastPassed ? readStr(S.lastPassed, 8, true) : ""; }
     sendMissionEntities();
-    for (const h of [...proxies.keys()]) dropProxy(h); // our own mission: no copies of a friend's
+    if (t - (missionDiagAt || 0) > 10000) { missionDiagAt = t; log(`[vc-coop] mission entities sent: ${ownMissionEntities().length}`); }
   } else {
     if (missionMoneyAt !== null) {
       const earned = Memory.ReadI32(S.money, false, true) - missionMoneyAt;
@@ -1010,14 +1027,13 @@ function missionsTick(t) {
       if (earned > 0 && passed) sendEvent(EVM.MONEY, String(earned));
       missionMoneyAt = null;
     }
-    mirrorMissionEntities();
   }
 }
 
 function onMissionEvent(kind, text) {
   if (kind === EVM.HIT) {
     const [h, dmg] = text.split(":").map((v) => parseInt(v, 10));
-    try { if (onMission() && Char.DoesExist(h)) { const c = new Char(h); c.setHealth(Math.max(0, c.getHealth() - dmg)); } } catch (e) {}
+    try { if (Char.DoesExist(h)) { const c = new Char(h); c.setHealth(Math.max(0, c.getHealth() - dmg)); } } catch (e) {}
   } else if (kind === EVM.MONEY && S.money) {
     const earned = parseInt(text, 10);
     if (earned > 0 && earned < 10000000) {
@@ -1138,6 +1154,339 @@ try { cleanUpPrevious(); } catch (e) { log(`[vc-coop] cleanup: ${e}`); }
 let started = false, announced = -1, lastCode = "", lastCodeCheck = 0;
 let tracedTicks = 0;
 
+
+// ---- one world for both (11-15) ---------------------------------------------------------------------------------
+// Near the host, the guest's game spawns no peds or traffic of its own: the host sends its ordinary peds and cars
+// around the guest (WORLD, 10 Hz) and the guest shows copies of them. Far from the host the guest's own population
+// comes back. Damage a guest does to a copy goes to the host (EVW.HIT); a car the guest drives off in becomes the
+// guest's own and the host removes its original (EVW.TAKE).
+const WORLD_SIZE = 44, WORLD_MAX = 240, WORLD_RADIUS = 120, SHARE_NEAR = 150;
+const worldBuf = Memory.Allocate(WORLD_SIZE * WORLD_MAX);
+const EVW = { HIT: 13, TAKE: 14 };
+const worldProxies = new Map(); // host handle -> { kind, ent, driver, model, seen, hp, lastTask, moving }
+const takenFromHost = new Set();
+let lastWorldSend = 0, lastLocalClear = 0, lastDensityAt = 0, sharedMode = false, worldDiagAt = 0;
+
+function poolEach(poolAt, size, fn) {
+  const pool = ptr(poolAt, true);
+  if (!pool) return;
+  const objects = ptr(pool, false), flags = ptr(pool + 8, false), count = Memory.ReadI32(pool + 0x10, false, false);
+  if (!objects || !flags || count <= 0 || count > 4096) return;
+  for (let idx = 0; idx < count; idx++) {
+    const f = Memory.ReadU8(flags + idx, false, false);
+    if (f & 0x80) continue; // free slot
+    fn(idx * 256 + f, objects + idx * size);
+  }
+}
+function headingOf(p) {
+  const fx = Memory.ReadFloat(p + E.forward, false, false), fy = Memory.ReadFloat(p + E.forward + 4, false, false);
+  let h = Math.atan2(-fx, fy) * 180 / Math.PI;
+  return h < 0 ? h + 360 : h;
+}
+function missionHandles() {
+  const out = new Set();
+  if (!S.cleanup) return out;
+  for (let i = 0; i < S.cleanupCount; i++) {
+    const at = S.cleanup + i * S.cleanupStride;
+    const kind = Memory.ReadU8(at, false, true);
+    if (kind === 1 || kind === 2) out.add(Memory.ReadI32(at + 4, false, true));
+  }
+  return out;
+}
+// handles that are players, friends' copies or copies of anything else: never shared, never cleared
+function ownedHandles(me) {
+  const out = missionHandles();
+  out.add(+me);
+  try { if (me.isInAnyCar()) out.add(+me.storeCarIsInNoSave()); } catch (e) {}
+  for (const r of remotes) { if (r) { out.add(+r.ped); if (r.car) out.add(+r.car); } }
+  for (const p of proxies.values()) out.add(+p.ent);
+  for (const p of worldProxies.values()) { out.add(+p.ent); if (p.driver) out.add(+p.driver); }
+  return out;
+}
+
+// ---- host: what is around each guest
+function hostWorldTick(me, t) {
+  if (t - lastWorldSend < 100) return;
+  lastWorldSend = t;
+  const guests = [];
+  for (let slot = 0; slot < 4; slot++) if (remotes[slot] && lastState[slot]) guests.push(lastState[slot]);
+  if (!guests.length) return;
+  const near = (p) => guests.some((g) => (g.x - p.x) ** 2 + (g.y - p.y) ** 2 < WORLD_RADIUS * WORLD_RADIUS);
+  const skip = ownedHandles(me);
+  const list = [];
+  poolEach(A.vehPool, A.vehSize, (h, p) => {
+    if (list.length >= WORLD_MAX || skip.has(h)) return;
+    const model = Memory.ReadI16(p + S.modelIndex, false, false);
+    if (model < 130 || model > 236) return;
+    const pos = readVec(p + E.pos);
+    if (!near(pos)) return;
+    try {
+      const car = new Car(h);
+      let c1 = 0, c2 = 0, drv = 0;
+      try { const cc = car.getColors(); c1 = cc.color1; c2 = cc.color2; } catch (e) {}
+      try { const d = car.getDriver(); if (d && +d > 0 && !skip.has(+d)) { const dp = pedPtr(+d); if (dp) drv = Memory.ReadI16(dp + S.modelIndex, false, false); } } catch (e) {}
+      const v = readVec(p + E.moveSpeed);
+      list.push({ h, kind: 1, c1, c2, flags: drv > 0 ? 1 : 0, model, drv, pos, heading: headingOf(p), v, hp: car.getHealth() });
+    } catch (e) {}
+  });
+  poolEach(A.pedPool, A.pedSize, (h, p) => {
+    if (list.length >= WORLD_MAX || skip.has(h)) return;
+    const model = Memory.ReadI16(p + S.modelIndex, false, false);
+    if (model <= 0 || model >= 109) return; // ordinary peds only (special characters crash the DE when loaded)
+    const pos = readVec(p + E.pos);
+    if (!near(pos)) return;
+    try {
+      const c = new Char(h);
+      if (c.isInAnyCar()) return; // drivers come with their car
+      const v = readVec(p + E.moveSpeed);
+      list.push({ h, kind: 2, c1: 0, c2: 0, flags: 0, model, drv: 0, pos, heading: headingOf(p), v, hp: c.getHealth() });
+    } catch (e) {}
+  });
+  list.forEach((e, i) => {
+    const b = worldBuf + i * WORLD_SIZE;
+    Memory.WriteI32(b, e.h, false, false);
+    Memory.WriteU8(b + 4, e.kind, false, false);
+    Memory.WriteU8(b + 5, e.c1 & 0xff, false, false);
+    Memory.WriteU8(b + 6, e.c2 & 0xff, false, false);
+    Memory.WriteU8(b + 7, e.flags, false, false);
+    Memory.WriteU8(b + 8, e.model & 0xff, false, false); Memory.WriteU8(b + 9, (e.model >> 8) & 0xff, false, false);
+    Memory.WriteU8(b + 10, e.drv & 0xff, false, false); Memory.WriteU8(b + 11, (e.drv >> 8) & 0xff, false, false);
+    const f = [e.pos.x, e.pos.y, e.pos.z, e.heading, e.v.x * 50, e.v.y * 50, e.v.z * 50, e.hp];
+    f.forEach((x, k) => Memory.WriteFloat(b + 12 + k * 4, x, false, false));
+  });
+  api.coop_world_send(worldBuf, list.length);
+  if (t - worldDiagAt > 10000) { worldDiagAt = t; log(`[vc-coop] world: sending ${list.length} peds and cars to the guest`); }
+}
+
+function onWorldEvent(kind, text) {
+  if (kind === EVW.HIT) {
+    const [h, dmg] = text.split(":").map((v) => parseInt(v, 10));
+    try { if (Char.DoesExist(h)) { const c = new Char(h); c.setHealth(Math.max(0, c.getHealth() - dmg)); } } catch (e) {}
+  } else if (kind === EVW.TAKE) {
+    const h = parseInt(text, 10);
+    try {
+      if (carExists(h)) {
+        const car = new Car(h);
+        if (!ownedHandles(player.getChar()).has(h)) {
+          try { const d = car.getDriver(); if (d && +d > 0) d.delete(); } catch (e) {}
+          car.delete();
+        }
+      }
+    } catch (e) { log(`[vc-coop] take ${h}: ${e}`); }
+  }
+}
+
+// ---- guest: copies of the host's world
+function setPopulation(on) {
+  try { World.SetPedDensityMultiplier(on ? 1.0 : 0.0); } catch (e) { log(`[vc-coop] ped density: ${e}`); }
+  try { World.SetCarDensityMultiplier(on ? 1.0 : 0.0); } catch (e) { log(`[vc-coop] car density: ${e}`); }
+}
+function dropWorldProxy(h) {
+  const p = worldProxies.get(h);
+  worldProxies.delete(h);
+  if (!p) return;
+  try { if (p.driver && Char.DoesExist(p.driver)) { forget(KIND.PED, p.driver); p.driver.delete(); } } catch (e) {}
+  try {
+    if (p.kind === 2 && Char.DoesExist(p.ent)) { forget(KIND.PED, p.ent); p.ent.delete(); }
+    if (p.kind === 1 && carExists(p.ent)) { forget(KIND.CAR, p.ent); p.ent.delete(); }
+  } catch (e) {}
+}
+function clearLocalPopulation(me) {
+  const skip = ownedHandles(me), mp = me.getCoordinates();
+  const close = (p) => (p.x - mp.x) ** 2 + (p.y - mp.y) ** 2 < SHARE_NEAR * SHARE_NEAR;
+  const peds = [], cars = [];
+  poolEach(A.pedPool, A.pedSize, (h, p) => { if (!skip.has(h) && close(readVec(p + E.pos))) peds.push(h); });
+  poolEach(A.vehPool, A.vehSize, (h, p) => { if (!skip.has(h) && close(readVec(p + E.pos))) cars.push(h); });
+  let n = 0;
+  for (const h of peds) { try { new Char(h).delete(); n++; } catch (e) {} } // peds first: a car never takes one along
+  for (const h of cars) {
+    try {
+      const car = new Car(h);
+      let busy = false;
+      try { const d = car.getDriver(); busy = d && +d > 0 && skip.has(+d); } catch (e) {}
+      if (!busy) { car.delete(); n++; }
+    } catch (e) {}
+  }
+  return n;
+}
+function guestWorldTick(me, t) {
+  // shared only near a friend: far away the host's game has nothing there to send
+  const mp = me.getCoordinates();
+  const near = remotes.some((r) => r && Char.DoesExist(r.ped) && dist2(mp, r.ped.getCoordinates()) < SHARE_NEAR * SHARE_NEAR);
+  if (near !== sharedMode || t - lastDensityAt > 5000) {
+    if (near !== sharedMode) log(`[vc-coop] world: ${near ? "shared with the host" : "own (far from the host)"}`);
+    sharedMode = near; lastDensityAt = t;
+    setPopulation(!near);
+    if (!near) for (const h of [...worldProxies.keys()]) dropWorldProxy(h);
+  }
+  const n = api.coop_world_get(worldBuf, WORLD_MAX);
+  if (!sharedMode) return;
+  if (t - lastLocalClear > 500) { lastLocalClear = t; clearLocalPopulation(me); }
+  for (let i = 0; i < n; i++) {
+    const b = worldBuf + i * WORLD_SIZE;
+    const h = Memory.ReadI32(b, false, false), kind = Memory.ReadU8(b + 4, false, false);
+    if (takenFromHost.has(h)) continue;
+    const c1 = Memory.ReadU8(b + 5, false, false), c2 = Memory.ReadU8(b + 6, false, false), flags = Memory.ReadU8(b + 7, false, false);
+    const model = Memory.ReadU8(b + 8, false, false) | Memory.ReadU8(b + 9, false, false) << 8;
+    const drv = Memory.ReadU8(b + 10, false, false) | Memory.ReadU8(b + 11, false, false) << 8;
+    const f = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => Memory.ReadFloat(b + 12 + k * 4, false, false));
+    const s = { x: f[0], y: f[1], z: f[2], heading: f[3], vx: f[4], vy: f[5], vz: f[6], hp: f[7] };
+    try { updateWorldProxy(h, kind, model, drv, flags, c1, c2, s, me, t); } catch (e) { log(`[vc-coop] world ${h}: ${e}`); }
+  }
+  for (const [h, p] of worldProxies) {
+    if (t - p.seen > 1500) { dropWorldProxy(h); continue; }
+    // the guest drove off in a copy: it is the guest's car now, the host removes its original
+    if (p.kind === 1 && me.isInAnyCar()) {
+      try {
+        if (+me.storeCarIsInNoSave() === +p.ent) {
+          worldProxies.delete(h); takenFromHost.add(h);
+          if (p.driver) { try { forget(KIND.PED, p.driver); if (Char.DoesExist(p.driver)) p.driver.delete(); } catch (e) {} }
+          forget(KIND.CAR, p.ent);
+          try { p.ent.setMission(0); } catch (e) {}
+          sendEvent(EVW.TAKE, String(h));
+        }
+      } catch (e) {}
+    }
+  }
+  if (t - worldDiagAt > 10000) { worldDiagAt = t; log(`[vc-coop] world: ${worldProxies.size} copies of the host's peds and cars`); }
+}
+function updateWorldProxy(h, kind, model, drv, flags, c1, c2, s, me, t) {
+  let p = worldProxies.get(h);
+  if (!p) {
+    if (s.hp <= 0) return; // dead before we saw it
+    if (kind === 1) {
+      if (model < 130 || model > 236 || !modelReady(model)) return;
+      if ((flags & 1) && !(drv > 0 && drv < 109 && modelReady(drv))) return;
+      const car = track(KIND.CAR, Car.Create(model, s.x, s.y, s.z));
+      Streaming.MarkModelAsNoLongerNeeded(model);
+      try { car.changeColor(c1, c2); } catch (e) {}
+      try { car.setHeading(s.heading); } catch (e) {}
+      let driver = null;
+      if (flags & 1) { driver = track(KIND.PED, Char.CreateInsideCar(car, 4, drv)); Streaming.MarkModelAsNoLongerNeeded(drv); }
+      try { car.setMission(0); } catch (e) {}
+      p = { kind, ent: car, driver, model, seen: t, hp: s.hp, headAt: 0 };
+    } else {
+      if (model <= 0 || model >= 109 || !modelReady(model)) return;
+      const ped = track(KIND.PED, Char.Create(4, model, s.x, s.y, s.z));
+      Streaming.MarkModelAsNoLongerNeeded(model);
+      try { ped.setHeading(s.heading); ped.setHeedThreats(false); ped.shutUp(true); } catch (e) {}
+      p = { kind, ent: ped, driver: null, model, seen: t, hp: s.hp, lastTask: 0, moving: false };
+    }
+    worldProxies.set(h, p);
+    return;
+  }
+  p.seen = t;
+  if (kind === 2) {
+    if (!Char.DoesExist(p.ent)) { worldProxies.delete(h); return; }
+    const local = p.ent.getHealth();
+    if (local < p.hp - 3) sendEvent(EVW.HIT, `${h}:${Math.round(p.hp - local)}`); // our hit: the host's game decides
+    if (s.hp <= 0) { if (local > 0) p.ent.setHealth(0); p.hp = 0; return; }
+    if (Math.abs(local - s.hp) > 1) p.ent.setHealth(Math.max(1, Math.round(s.hp)));
+    p.hp = s.hp;
+    const c = p.ent.getCoordinates();
+    const d = Math.sqrt(dist2(c, s));
+    const speed = Math.sqrt(s.vx * s.vx + s.vy * s.vy);
+    if (d > 4) {
+      p.ent.setCoordinates(s.x, s.y, s.z); placeAt(pedPtr(p.ent), s.x, s.y, s.z); p.ent.setHeading(s.heading); p.moving = false;
+    } else if (speed > 0.3 || d > 1) {
+      if (t - p.lastTask > 300) {
+        const gx = s.x + s.vx * 0.6, gy = s.y + s.vy * 0.6;
+        if (speed + d > 3) p.ent.setObjRunToCoord(gx, gy); else p.ent.setObjGotoCoordOnFoot(gx, gy);
+        p.lastTask = t; p.moving = true;
+      }
+    } else if (p.moving) { try { p.ent.setObjWaitOnFoot(); } catch (e) {} p.moving = false; p.ent.setHeading(s.heading); }
+    return;
+  }
+  if (!carExists(p.ent)) { worldProxies.delete(h); return; }
+  const cp = carPtr(p.ent);
+  const c = p.ent.getCoordinates();
+  const ex = s.x - c.x, ey = s.y - c.y, ez = s.z - c.z;
+  const err = Math.sqrt(ex * ex + ey * ey + ez * ez);
+  if (err > 10) { p.ent.setCoordinates(s.x, s.y, s.z); placeAt(cp, s.x, s.y, s.z); p.ent.setHeading(s.heading); }
+  else placeAt(cp, c.x + ex * 0.25, c.y + ey * 0.25, c.z + ez * 0.25);
+  if (t - p.headAt > 100) {
+    p.headAt = t;
+    let dh = Math.abs(p.ent.getHeading() - s.heading) % 360; if (dh > 180) dh = 360 - dh;
+    if (dh > 4) p.ent.setHeading(s.heading);
+  }
+  writeVec(cp + E.moveSpeed, { x: (s.vx + ex * 1.2) / 50, y: (s.vy + ey * 1.2) / 50, z: (s.vz + ez * 1.2) / 50 });
+}
+function leaveSharedWorld() {
+  if (!sharedMode && !worldProxies.size) return;
+  for (const h of [...worldProxies.keys()]) dropWorldProxy(h);
+  sharedMode = false;
+  setPopulation(true);
+}
+function sharedWorldTick(me, t) {
+  if (isGuest()) guestWorldTick(me, t);
+  else { leaveSharedWorld(); if (anyFriend()) hostWorldTick(me, t); }
+}
+
+// ---- the host's cutscene, played again in the guest's game (11-15) -----------------------------------------------
+// The host's DLL reads the cutscene commands of its mission script and sends them (EV_CUT): L name, M slot model,
+// F offset, O object model, A object anim, H head, B head anim, S start. Loading models from a script has crashed the
+// DE before (special characters), so a marker file guards it: if the game died during one, no more replays.
+const EV_CUT = 12;
+const flagBuf = Memory.Allocate(32);
+function flag(op, name) { try { writeAscii(flagBuf, name, 32); return api.coop_flag(op, flagBuf); } catch (e) { return 0; } }
+if (flag(0, "cutscene-trying")) { flag(1, "cutscene-off"); flag(2, "cutscene-trying"); log("[vc-coop] cutscene replay crashed last time: off"); }
+let cut = null;
+function onCutEvent(text) {
+  const a = text.split(":");
+  if (a[0] === "L") { cut = { name: a[1], models: [], objs: [], heads: [], offset: null, phase: "collect" }; return; }
+  if (!cut || cut.phase !== "collect") return;
+  if (a[0] === "M") cut.models.push({ slot: +a[1], name: a[2] });
+  else if (a[0] === "F") cut.offset = { x: +a[1], y: +a[2], z: +a[3] };
+  else if (a[0] === "O") cut.objs[+a[1]] = { model: +a[2], anim: "" };
+  else if (a[0] === "A") { if (cut.objs[+a[1]]) cut.objs[+a[1]].anim = a[2]; }
+  else if (a[0] === "S") cut.phase = "load";
+}
+function cutTick(me, t) {
+  if (!cut || cut.phase === "collect") return;
+  try {
+    if (cut.phase === "load") {
+      if (flag(0, "cutscene-off") || onMission() || cutsceneNow()) { log(`[vc-coop] cutscene ${cut.name}: not replayed here`); cut = null; return; }
+      flag(1, "cutscene-trying");
+      log(`[vc-coop] cutscene ${cut.name}: loading ${cut.models.length} models`);
+      for (const m of cut.models) Streaming.LoadSpecialModel(m.slot, m.name);
+      cut.at = t; cut.phase = "wait";
+      return;
+    }
+    if (cut.phase === "wait") {
+      const models = cut.objs.filter(Boolean).map((o) => o.model);
+      const ready = models.every((m) => Streaming.HasModelLoaded(m));
+      if (!ready && t - cut.at < 8000) return;
+      player.setControl(false);
+      Cutscene.Load(cut.name);
+      if (cut.offset) Cutscene.SetOffset(cut.offset.x, cut.offset.y, cut.offset.z);
+      cut.made = [];
+      for (const o of cut.objs) {
+        if (!o) continue;
+        const obj = CutsceneObject.Create(o.model);
+        if (o.anim) obj.setAnim(o.anim);
+        cut.made.push(obj);
+      }
+      Cutscene.Start();
+      log(`[vc-coop] cutscene ${cut.name}: playing (${cut.made.length} objects${ready ? "" : ", some models missing"})`);
+      cut.phase = "run";
+      return;
+    }
+    if (cut.phase === "run" && Cutscene.HasFinished()) {
+      Cutscene.Clear();
+      player.setControl(true);
+      flag(2, "cutscene-trying");
+      log(`[vc-coop] cutscene ${cut.name}: done`);
+      cut = null;
+    }
+  } catch (e) {
+    log(`[vc-coop] cutscene ${cut && cut.name}: ${e}`);
+    try { Cutscene.Clear(); } catch (e2) {}
+    player.setControl(true);
+    flag(2, "cutscene-trying");
+    cut = null;
+  }
+}
+
 while (true) {
   wait(0);
   if (!player.isPlaying()) continue;
@@ -1159,7 +1508,7 @@ while (true) {
     if (status === 2) say("VC Co-op: connected");
     if (status === 3) say("VC Co-op: server refused (wrong code or no free slots)");
   }
-  if (status !== 2) continue;
+  if (status !== 2) { leaveSharedWorld(); continue; }
 
   const me = player.getChar();
   // the first connected frames name each step in the log: if CLEO disposes the script, the last name shows where
@@ -1172,6 +1521,8 @@ while (true) {
   trace("world"); tellWorld(api.coop_slot(), t);
   trace("events"); hearWorld();
   trace("missions"); missionsTick(t);
+  trace("shared"); sharedWorldTick(me, t);
+  cutTick(me, t);
   trace("report"); report(me, t);
   retryTick(me, t);
   trace("done"); tracedTicks++;

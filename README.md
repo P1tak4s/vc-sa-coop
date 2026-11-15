@@ -60,8 +60,8 @@ Your friend does the same on their PC.
 | | |
 | --- | --- |
 | **Co-op from the menu** | A **CO-OP** entry in the main and pause menus (and **F9** anywhere). Sessions are Steam lobbies found by name and password, no port forwarding. An IP-code mode without Steam is in the app. |
-| **Together in the world** | Your friend walks, runs and drives in your Vice City with their weapon, a name tag and a map blip; interiors are respected. Clock, weather and wanted level are shared. |
-| **One story for both** | The host plays the story and the guest joins it; the guest can still play and save its own missions. The host's mission starts once the partner stands in the marker. Mission text and destination markers reach the guest; a friend's cutscene is announced. |
+| **Together in the world** | Your friend walks, runs and drives in your Vice City with their weapon, a name tag and a map blip; interiors are respected. Clock, weather and wanted level are shared. Near the host, the guest sees the host's own peds and traffic instead of their own (experimental). |
+| **One story for both** | A guest who joins gets the host's newest save (their own saves are put aside and backed up). The host plays the story and the guest joins it; the host's cutscenes play in the guest's game too (experimental); the guest can still play and save its own missions. The host's mission starts once the partner stands in the marker. Mission text and destination markers reach the guest; a friend's cutscene is announced. |
 | **Ride along** | **G** puts you in a free seat of your friend's car. When it is full (a two-seater on a mission, a bike with two) you ride on the trunk facing back, or behind the rider, and can still shoot. **F** gets you out. |
 | **Down, not dead** | Below 40 health you go down instead of dying. A 30-second countdown appears and your friend holds **E** to get you up. |
 | **Retry together** | A failed mission offers **R**: both players go back to where the mission began. |

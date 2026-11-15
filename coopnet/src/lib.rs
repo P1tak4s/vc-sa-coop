@@ -34,6 +34,8 @@ struct Shared {
     events_in: std::collections::VecDeque<Vec<u8>>, // kind + text, received
     ents_out: Option<Vec<u8>>,                      // our latest mission entity batch (n + entries)
     ents_in: Option<(Vec<u8>, Instant)>,            // the latest batch from a friend
+    world_out: Option<Vec<u8>>,                     // host: n entries of WORLD_SIZE around the guests, to send
+    world_in: Vec<u8>,                              // guest: entries heard since the script last asked
 }
 
 fn shared() -> &'static Mutex<Shared> {
@@ -133,7 +135,7 @@ fn net_thread(sess: Session) {
                     }
                 }
             }
-            EVENT if body.len() >= 2 && s.events_in.len() < 32 => s.events_in.push_back(body[1..].to_vec()),
+            EVENT if body.len() >= 2 && s.events_in.len() < 128 => s.events_in.push_back(body[1..].to_vec()),
             ENTS if body.len() >= 2 && body.len() == 2 + body[1] as usize * ENT_SIZE => s.ents_in = Some((body[1..].to_vec(), Instant::now())),
             NAMES if !body.is_empty() => {
                 for e in body[1..].chunks_exact(1 + NICK_LEN).take(body[0] as usize) {
@@ -281,10 +283,36 @@ pub unsafe extern "C" fn coop_event_send(kind: i64, text: *const u8) -> i64 {
     let mut ev = vec![kind as u8];
     ev.extend(t.bytes().filter(|b| b.is_ascii_graphic() || *b == b' ').take(120)); // spaces: report lines
     let mut s = shared().lock().unwrap();
-    if s.events_out.len() < 32 {
+    if s.events_out.len() < 128 {
         s.events_out.push(ev);
     }
     1
+}
+
+/// An event from inside the DLL (the script hook): kind + ASCII text.
+pub fn queue_event(kind: u8, text: &str) {
+    let mut ev = vec![kind];
+    ev.extend(text.bytes().filter(|b| b.is_ascii_graphic()).take(120));
+    let mut s = shared().lock().unwrap();
+    if s.events_out.len() < 128 {
+        s.events_out.push(ev);
+    }
+}
+
+/// A marker file in the data folder: op 1 = create, 2 = delete, 0 = 1 if it is there. The script sets one before
+/// something that might crash the game (a friend's cutscene) and clears it after: still there = it crashed last time.
+#[no_mangle]
+pub unsafe extern "C" fn coop_flag(op: i64, name: *const u8) -> i64 {
+    let n = c_str(name);
+    if n.is_empty() || !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return 0;
+    }
+    let Some(path) = game::data_dir().map(|d| d.join(format!("{n}.flag"))) else { return 0 };
+    match op {
+        1 => std::fs::write(&path, b"1").is_ok() as i64,
+        2 => std::fs::remove_file(&path).is_ok() as i64,
+        _ => path.exists() as i64,
+    }
 }
 
 /// Next received event: returns its kind (0 = none) and writes its text, null-terminated, into `out` (128 bytes).
@@ -310,6 +338,31 @@ pub unsafe extern "C" fn coop_ents_send(data: *const u8, n: i64) -> i64 {
     b.extend_from_slice(std::slice::from_raw_parts(data, n as usize * ENT_SIZE));
     shared().lock().unwrap().ents_out = Some(b);
     1
+}
+
+/// Host: the ordinary peds and cars around the guests, `n` entries of WORLD_SIZE bytes (latest wins).
+#[no_mangle]
+pub unsafe extern "C" fn coop_world_send(data: *const u8, n: i64) -> i64 {
+    if data.is_null() || !(0..=240).contains(&n) {
+        return 0;
+    }
+    shared().lock().unwrap().world_out = Some(std::slice::from_raw_parts(data, n as usize * WORLD_SIZE).to_vec());
+    1
+}
+
+/// Guest: the host's entries heard since the last call into `out` (room for `max`). Returns how many.
+#[no_mangle]
+pub unsafe extern "C" fn coop_world_get(out: *mut u8, max: i64) -> i64 {
+    if out.is_null() || max <= 0 {
+        return 0;
+    }
+    let mut s = shared().lock().unwrap();
+    let n = (s.world_in.len() / WORLD_SIZE).min(max as usize);
+    // more than room: keep the newest
+    let start = s.world_in.len() - n * WORLD_SIZE;
+    std::ptr::copy_nonoverlapping(s.world_in[start..].as_ptr(), out, n * WORLD_SIZE);
+    s.world_in.clear();
+    n as i64
 }
 
 /// A friend's latest mission entities into `out` (MAX_ENTS x ENT_SIZE bytes). Returns how many; -1 = none for 2 s.
@@ -411,8 +464,11 @@ fn steam_thread(host: bool, name: String, pw: String) {
     };
     log_line(&format!("steam: in lobby {lobby} as {}", st.me()));
 
-    let mut buf = [0u8; 2048];
+    let mut buf = [0u8; 4096];
     let mut members: Vec<u64> = vec![];
+    let mut save_sent: Vec<u64> = vec![];
+    let mut save_name = String::new();
+    let mut save_parts: Vec<Option<Vec<u8>>> = vec![];
     let mut last_members = Instant::now() - Duration::from_secs(5);
     let mut last_send = Instant::now();
     loop {
@@ -453,6 +509,41 @@ fn steam_thread(host: bool, name: String, pw: String) {
                 st.send(to, &packet(ENTS, &b), steam::SEND_UNRELIABLE);
             }
         }
+        if let Some(w) = shared().lock().unwrap().world_out.take() {
+            for chunk in w.chunks(WORLD_PER_PACKET * WORLD_SIZE) {
+                let mut body = vec![(chunk.len() / WORLD_SIZE) as u8];
+                body.extend_from_slice(chunk);
+                let p = packet(WORLD, &body);
+                for to in members.iter().copied().filter(|&m| m != st.me()) {
+                    st.send(to, &p, steam::SEND_UNRELIABLE);
+                }
+            }
+        }
+        // the host gives every guest that joins its newest save, so both play the same story (11-15)
+        if host {
+            let new: Vec<u64> = members.iter().copied().filter(|&m| m != st.me() && !save_sent.contains(&m)).collect();
+            for m in new {
+                save_sent.push(m);
+                match saves::newest_save() {
+                    Some((name, bytes)) => {
+                        let parts = bytes.len().div_ceil(SAVE_PART) as u16;
+                        for (i, chunk) in bytes.chunks(SAVE_PART).enumerate() {
+                            let mut body = Vec::with_capacity(chunk.len() + 40);
+                            body.extend_from_slice(&(i as u16).to_le_bytes());
+                            body.extend_from_slice(&parts.to_le_bytes());
+                            if i == 0 {
+                                body.push(name.len() as u8);
+                                body.extend_from_slice(name.as_bytes());
+                            }
+                            body.extend_from_slice(chunk);
+                            st.send(m, &packet(SAVE, &body), steam::SEND_RELIABLE);
+                        }
+                        log_line(&format!("saves: sent {name} ({} bytes, {parts} parts) to the guest", bytes.len()));
+                    }
+                    None => log_line("saves: no save to send to the guest"),
+                }
+            }
+        }
         for ev in std::mem::take(&mut shared().lock().unwrap().events_out) {
             let mut body = vec![my_slot.max(0) as u8];
             body.extend_from_slice(&ev);
@@ -478,8 +569,39 @@ fn steam_thread(host: bool, name: String, pw: String) {
                     }
                 }
                 REVIVE if body.len() == 2 && body[1] as i32 == s.slot => s.revived = true,
-                EVENT if body.len() >= 2 && s.events_in.len() < 32 => s.events_in.push_back(body[1..].to_vec()),
+                EVENT if body.len() >= 2 && s.events_in.len() < 128 => s.events_in.push_back(body[1..].to_vec()),
                 ENTS if !body.is_empty() && body.len() == 1 + body[0] as usize * ENT_SIZE => s.ents_in = Some((body.to_vec(), Instant::now())),
+                WORLD if !body.is_empty() && body.len() == 1 + body[0] as usize * WORLD_SIZE && !host => {
+                    if s.world_in.len() > 400 * WORLD_SIZE {
+                        s.world_in.clear(); // the script stopped asking: start over
+                    }
+                    s.world_in.extend_from_slice(&body[1..]);
+                }
+                SAVE if body.len() > 4 && !host => {
+                    let part = u16::from_le_bytes([body[0], body[1]]) as usize;
+                    let parts = u16::from_le_bytes([body[2], body[3]]) as usize;
+                    let mut data = &body[4..];
+                    if part == 0 {
+                        if data.is_empty() || data.len() < 1 + data[0] as usize {
+                            continue;
+                        }
+                        save_name = String::from_utf8_lossy(&data[1..1 + data[0] as usize]).into_owned();
+                        data = &data[1 + data[0] as usize..];
+                        save_parts = vec![None; parts.min(5000)];
+                    }
+                    if part < save_parts.len() && save_parts.len() == parts {
+                        save_parts[part] = Some(data.to_vec());
+                        if save_parts.iter().all(|p| p.is_some()) {
+                            let bytes: Vec<u8> = save_parts.drain(..).flatten().flatten().collect();
+                            drop(s);
+                            let line = saves::receive_host_save(&save_name, &bytes).unwrap_or_else(|e| e);
+                            log_line(&line);
+                            *overlay::SAVE_NOTE.lock().unwrap() = line.clone();
+                            *overlay::NOTE.lock().unwrap() = Some((line, Instant::now()));
+                            continue;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
