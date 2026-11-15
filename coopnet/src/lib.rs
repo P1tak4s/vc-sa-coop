@@ -5,6 +5,7 @@
 mod ai;
 mod dialog;
 mod game;
+mod modsettings;
 mod overlay;
 mod saves;
 mod scripthook;

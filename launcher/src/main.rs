@@ -162,12 +162,18 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    // VC-SA-Coop.exe --apply-when-closed sa|vc: started by the game's co-op menu when a setting changed
+    if let Some(i) = args.iter().position(|a| a == "--apply-when-closed") {
+        let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
+        apply_when_closed(g);
+        return Ok(());
+    }
     // sa-coop.exe --valdymas vc 0|1 (original / better car handling)
     if let Some(i) = args.iter().position(|a| a == "--valdymas") {
         let g = if args.get(i + 1).is_some_and(|a| a.eq_ignore_ascii_case("vc")) { &GAMES[1] } else { &GAMES[0] };
         let better = args.get(i + 2).is_none_or(|v| v != "0");
         let line = match find_game(g) {
-            Some(dir) => set_handling(g, &dir, better).unwrap_or_else(|e| e),
+            Some(dir) => set_handling(g, &dir, better, load_settings(g).is_some_and(|s| s.fast)).unwrap_or_else(|e| e),
             None => format!("{} not found", g.name),
         };
         let dir = data_dir(g);
@@ -288,6 +294,15 @@ fn install(g: &GameInfo, game: &Path) -> Result<Vec<String>, String> {
         let _ = std::fs::remove_file(game.join(old));
     }
     log.push("Mod installed.".into());
+    // Win64\coop-helper\: this exe and extra\, so the co-op menu can apply setting changes after the game closes
+    let helper = game.join("coop-helper");
+    if let Ok(me) = std::env::current_exe() {
+        if me.parent() != Some(helper.as_path()) {
+            let _ = std::fs::create_dir_all(&helper);
+            let _ = std::fs::copy(&me, helper.join("VC-SA-Coop.exe"));
+            let _ = copy_all(&src.with_file_name("extra"), &helper.join("extra"));
+        }
+    }
     extras(g, game, &mut log);
     Ok(log)
 }
@@ -365,6 +380,209 @@ fn extras(g: &GameInfo, win64: &Path, log: &mut Vec<String>) {
     }
 }
 
+// ---- the player's choices: %LOCALAPPDATA%\<game>\settings.txt, shared with the co-op menu's Settings tab -------
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Settings {
+    pub gfx: usize,
+    pub grip: bool,
+    pub fast: bool,
+    pub reshade: bool,
+}
+
+fn settings_file(g: &GameInfo) -> PathBuf {
+    data_dir(g).join("settings.txt")
+}
+
+fn load_settings(g: &GameInfo) -> Option<Settings> {
+    let t = std::fs::read_to_string(settings_file(g)).ok()?;
+    let flag = |k: &str| t.lines().any(|l| l.trim() == format!("{k}=1"));
+    let gfx = t.lines().find_map(|l| l.trim().strip_prefix("gfx=")?.parse::<usize>().ok())?.min(GRAPHICS.len() - 1);
+    Some(Settings { gfx, grip: flag("grip"), fast: flag("fast"), reshade: flag("reshade") })
+}
+
+fn save_settings(g: &GameInfo, s: Settings) {
+    let dir = data_dir(g);
+    let _ = std::fs::create_dir_all(&dir);
+    let text = format!("gfx={}\ngrip={}\nfast={}\nreshade={}\n", s.gfx, s.grip as u8, s.fast as u8, s.reshade as u8);
+    let _ = std::fs::write(settings_file(g), text);
+}
+
+/// Graphics, handling and ReShade from the settings: what Install does after copying the mod, and what
+/// --apply-when-closed does for changes made in the game's co-op menu.
+fn apply_settings(g: &GameInfo, win64: &Path, s: Settings) -> Vec<(bool, String)> {
+    let mut log = vec![];
+    let mut push = |r: Result<String, String>| match r {
+        Ok(l) => log.push((true, l)),
+        Err(e) => log.push((false, e)),
+    };
+    if graphics_level(g).is_some() {
+        push(set_graphics(g, s.gfx));
+    }
+    if is_vc(g) {
+        push(set_handling(g, win64, s.grip, s.fast));
+    }
+    push(set_reshade(win64, s.reshade));
+    save_settings(g, s);
+    log
+}
+
+/// The co-op menu changed settings while the game ran: wait until the game has closed (its files are locked while
+/// it runs), then apply them. Gives up after 12 hours.
+fn apply_when_closed(g: &GameInfo) {
+    for _ in 0..(12 * 3600 / 3) {
+        if !game_running(g) {
+            std::thread::sleep(Duration::from_secs(2));
+            let (Some(dir), Some(s)) = (find_game(g), load_settings(g)) else { return };
+            let lines: Vec<String> = apply_settings(g, &dir, s).into_iter().map(|(ok, l)| format!("{} {l}", if ok { "ok" } else { "FAILED" })).collect();
+            let _ = std::fs::write(data_dir(g).join("apply.log"), lines.join("\n"));
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+}
+
+// ---- self-update: the newest release on GitHub replaces this exe and the game\ and extra\ folders beside it ----
+// Only from this project's own releases, over HTTPS, and only a zip whose SHA-256 matches the one in the release
+// notes. The curl, certutil and tar that come with Windows do the download, hashing and unpacking.
+const RELEASES_API: &str = "https://api.github.com/repos/P1tak4s/vc-sa-coop/releases?per_page=1";
+const DOWNLOAD_PREFIX: &str = "https://github.com/P1tak4s/vc-sa-coop/releases/download/";
+
+fn version_of(s: &str) -> Option<(u32, u32, u32)> {
+    let mut it = s.trim().trim_start_matches('v').split('.').map(|p| p.parse::<u32>().ok());
+    Some((it.next()??, it.next()??, it.next()??))
+}
+
+/// The string value of `"key"` in a JSON text (first one; fine for tags and URLs, which have no escapes).
+fn json_str<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let at = text.find(&format!("\"{key}\""))? + key.len() + 2;
+    let rest = text[at..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    Some(&rest[..rest.find('"')?])
+}
+
+pub struct Update {
+    pub version: String,
+    url: String,
+    sha256: String,
+}
+
+/// The newest release, if it is newer than `mine` and has what a safe update needs (our zip and its hash).
+fn find_update(json: &str, mine: &str) -> Option<Update> {
+    let tag = json_str(json, "tag_name")?;
+    if version_of(tag)? <= version_of(mine)? {
+        return None;
+    }
+    let url = json_str(json, "browser_download_url")?;
+    if !url.starts_with(DOWNLOAD_PREFIX) || !url.ends_with("-windows-x64.zip") || url.contains(['"', ' ', '\\']) {
+        return None;
+    }
+    const MARK: &str = "SHA-256 of the zip: `";
+    let hash = json.get(json.find(MARK)? + MARK.len()..)?.get(..64)?;
+    if !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(Update { version: tag.trim_start_matches('v').to_string(), url: url.to_string(), sha256: hash.to_ascii_uppercase() })
+}
+
+fn system_tool(name: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let dir = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into())).join("System32");
+    let mut c = std::process::Command::new(dir.join(name));
+    c.creation_flags(0x0800_0000); // no console window
+    c
+}
+
+fn check_update() -> Option<Update> {
+    let out = system_tool("curl.exe").args(["-sL", "--proto", "=https", "--max-time", "10", "-A", "sa-coop-launcher", RELEASES_API]).output().ok()?;
+    find_update(&String::from_utf8_lossy(&out.stdout), env!("CARGO_PKG_VERSION"))
+}
+
+fn copy_all(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let dst = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_all(&entry.path(), &dst)?;
+        } else {
+            std::fs::copy(entry.path(), &dst)?;
+        }
+    }
+    Ok(())
+}
+
+/// Download, check and unpack the release, then swap the folders and this exe (the old exe is kept as .old until
+/// the next start: Windows lets a running exe be renamed, not overwritten).
+fn apply_update(u: &Update) -> Result<(), String> {
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let here = me.parent().ok_or("no folder")?.to_path_buf();
+    let tmp = std::env::temp_dir().join("vc-sa-coop-update");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("x")).map_err(|e| e.to_string())?;
+    let zip = tmp.join("update.zip");
+    let ok = system_tool("curl.exe")
+        .args(["-sL", "--fail", "--proto", "=https", "--max-time", "600", "--max-filesize", "400000000", "-A", "sa-coop-launcher", "-o"])
+        .arg(&zip)
+        .arg(&u.url)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        return Err("download failed".into());
+    }
+    let out = system_tool("certutil.exe").arg("-hashfile").arg(&zip).arg("SHA256").output().map_err(|e| format!("could not check the download ({e})"))?;
+    let got = String::from_utf8_lossy(&out.stdout).lines().map(|l| l.replace(' ', "").to_ascii_uppercase()).find(|l| l.len() == 64 && l.chars().all(|c| c.is_ascii_hexdigit()));
+    if got.as_deref() != Some(u.sha256.as_str()) {
+        return Err("the download did not match the checksum in the release notes, nothing changed".into());
+    }
+    let ok = system_tool("tar.exe").arg("-xf").arg(&zip).arg("-C").arg(tmp.join("x")).status().map(|s| s.success()).unwrap_or(false);
+    let new = tmp.join(r"x\VC-SA-Coop");
+    if !ok || !new.join("VC-SA-Coop.exe").is_file() || !new.join(r"game\coopnet64.asi").is_file() {
+        return Err("could not unpack the download, nothing changed".into());
+    }
+    for dir in ["game", "extra"] {
+        copy_all(&new.join(dir), &here.join(dir)).map_err(|e| format!("could not copy the new files ({e})"))?;
+    }
+    let _ = std::fs::copy(new.join("README.txt"), here.join("README.txt"));
+    let old = me.with_extension("exe.old");
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(&me, &old).map_err(|e| format!("could not replace the program ({e})"))?;
+    if let Err(e) = std::fs::copy(new.join("VC-SA-Coop.exe"), &me) {
+        let _ = std::fs::rename(&old, &me);
+        return Err(format!("could not replace the program ({e})"));
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
+/// What the window shows about updating.
+#[derive(Clone, PartialEq)]
+pub enum Upd {
+    Idle,
+    Working(String),
+    Done(String),
+    Failed(String),
+}
+
+/// Runs once at start, in the background. Only for the downloaded package (the exe beside its game\ folder): not for
+/// the helper copy in the game folder and not for a development build.
+fn start_update(state: Arc<std::sync::Mutex<Upd>>, ctx: egui::Context) {
+    let packaged = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(r"game\coopnet64.asi").is_file())).unwrap_or(false);
+    if !packaged || std::env::args().any(|a| a == "--updated") {
+        return; // --updated: we were just replaced; never loop if the exe in a release reports an older version
+    }
+    std::thread::spawn(move || {
+        let Some(u) = check_update() else { return };
+        *state.lock().unwrap() = Upd::Working(u.version.clone());
+        ctx.request_repaint();
+        let r = apply_update(&u);
+        *state.lock().unwrap() = match r {
+            Ok(()) => Upd::Done(u.version),
+            Err(e) => Upd::Failed(format!("Could not update to v{}: {e}. You can download it from GitHub.", u.version)),
+        };
+        ctx.request_repaint();
+    });
+}
+
 // ---- better car handling (Vice City): the game's own handling.cfg, retuned, packed as ~mods\coop_handling_P.pak ----
 const HANDLING_REL: &str = "Gameface/Content/OriginalData/ViceCity/data/handling.cfg";
 
@@ -374,7 +592,10 @@ fn handling_pak(win64: &Path) -> Option<PathBuf> {
 
 /// One car line of VC's handling.cfg (33 fields, see the file's header): more grip, stronger brakes with ABS, firmer
 /// suspension, a lower centre of mass, a little more pull. Bikes, boats, helicopters and planes are left alone.
-fn retune_line(line: &str) -> Option<String> {
+/// `fast`: every car reaches at least 260 km/h, with more pull in proportion so a slow one can get there.
+const FAST_TOP_SPEED: f32 = 260.0;
+
+fn retune_line(line: &str, better: bool, fast: bool) -> Option<String> {
     let mut f: Vec<String> = line.split_whitespace().map(String::from).collect();
     if f.len() != 33 || !f[0].chars().next()?.is_ascii_alphabetic() {
         return None;
@@ -387,21 +608,32 @@ fn retune_line(line: &str) -> Option<String> {
     // 11-08 v1 (grip x1.2, firmer springs, lower centre of mass) felt heavy: now lighter and quicker, a little more grip
     let (traction, loss, top, accel, brake, lock) = (num(&f[9])?, num(&f[10])?, num(&f[13])?, num(&f[14])?, num(&f[17])?, num(&f[20])?);
     let mut set = |i: usize, v: f32| f[i] = format!("{v:.3}");
-    set(9, (traction * 1.08).min(2.0));
-    set(10, (loss * 1.05).min(1.0));
-    set(13, top * 1.2); // top speed
-    set(14, accel * 1.25); // no cap: VC values go far above the documented 10 (Infernus 30); a cap made cars slow
-    set(17, brake * 1.2);
-    set(20, (lock * 1.1).min(40.0));
-    f[19] = "1".into(); // ABS
+    let (mut top, mut accel) = (top, accel);
+    if better {
+        set(9, (traction * 1.08).min(2.0));
+        set(10, (loss * 1.05).min(1.0));
+        top *= 1.2;
+        accel *= 1.25; // no cap: VC values go far above the documented 10 (Infernus 30); a cap made cars slow
+        set(17, brake * 1.2);
+        set(20, (lock * 1.1).min(40.0));
+    }
+    if fast && top > 0.0 && top < FAST_TOP_SPEED {
+        accel *= (FAST_TOP_SPEED / top).sqrt().min(1.6);
+        top = FAST_TOP_SPEED;
+    }
+    set(13, top);
+    set(14, accel);
+    if better {
+        f[19] = "1".into(); // ABS
+    }
     Some(f.join(" "))
 }
 
-fn retune_handling(text: &str) -> (String, usize) {
+fn retune_handling(text: &str, better: bool, fast: bool) -> (String, usize) {
     let mut n = 0;
     let out: Vec<String> = text
         .lines()
-        .map(|l| match retune_line(l) {
+        .map(|l| match retune_line(l, better, fast) {
             Some(t) => {
                 n += 1;
                 t
@@ -412,14 +644,14 @@ fn retune_handling(text: &str) -> (String, usize) {
     (out.join("\r\n") + "\r\n", n)
 }
 
-/// better = true: build the pak from this PC's own handling.cfg; false: remove it.
-fn set_handling(g: &GameInfo, win64: &Path, better: bool) -> Result<String, String> {
+/// better and/or fast: build the pak from this PC's own handling.cfg; neither: remove it.
+fn set_handling(g: &GameInfo, win64: &Path, better: bool, fast: bool) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     if !is_vc(g) {
         return Err("the handling fix is Vice City only for now".into());
     }
     let pak_out = handling_pak(win64).ok_or("game folder not found")?;
-    if !better {
+    if !better && !fast {
         let _ = std::fs::remove_file(&pak_out);
         return Ok("Handling: original (applies next time the game starts)".into());
     }
@@ -430,7 +662,7 @@ fn set_handling(g: &GameInfo, win64: &Path, better: bool) -> Result<String, Stri
     if !o.status.success() || o.stdout.len() < 1000 {
         return Err(format!("could not read handling.cfg: {}", String::from_utf8_lossy(&o.stderr).trim()));
     }
-    let (text, n) = retune_handling(&String::from_utf8_lossy(&o.stdout));
+    let (text, n) = retune_handling(&String::from_utf8_lossy(&o.stdout), better, fast);
     let tmp = std::env::temp_dir().join(format!("{}-handling", g.data));
     let _ = std::fs::remove_dir_all(&tmp);
     let file = tmp.join("src").join(HANDLING_REL);
@@ -450,7 +682,12 @@ fn set_handling(g: &GameInfo, win64: &Path, better: bool) -> Result<String, Stri
     std::fs::create_dir_all(pak_out.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::copy(&out, &pak_out).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_dir_all(&tmp);
-    Ok(format!("Handling: better, {n} cars (applies next time the game starts)"))
+    let what = match (better, fast) {
+        (true, true) => "better and faster (260 km/h)",
+        (true, false) => "better",
+        _ => "original, faster (260 km/h)",
+    };
+    Ok(format!("Handling: {what}, {n} cars (applies next time the game starts)"))
 }
 
 // ---- ReShade (extra\reshade: the official ReShade64.dll, our VCCoop look) as dxgi.dll next to the game ----------
@@ -519,6 +756,7 @@ fn uninstall(g: &GameInfo, win64: &Path) -> Vec<String> {
         let _ = std::fs::rename(&backup, win64.join("version.dll"));
         log.push("Previous version.dll restored".into());
     }
+    let _ = std::fs::remove_dir_all(win64.join("coop-helper"));
     log.push(format!("Files removed: {n}"));
     if reshade_on(win64) == Some(true) {
         let _ = set_reshade(win64, false);
@@ -592,7 +830,7 @@ mod tests {
     #[test]
     fn retunes_cars_only() {
         let car = "INFERNUS        1500.0 1.9 4.6 1.3 0.0 0.0 -0.25 70  0.80 0.85 0.50 5 240.0 30.0 R P 11.0  0.51 0 30.0  1.5  0.10 0.0  0.27 35000 0.25 -0.10 0.5  0.4		40002004	1  1";
-        let t = retune_line(car).unwrap();
+        let t = retune_line(car, true, false).unwrap();
         let f: Vec<&str> = t.split_whitespace().collect();
         assert_eq!(f[9], "0.864");
         assert_eq!(f[19], "1");
@@ -600,7 +838,26 @@ mod tests {
         assert_eq!(f[14], "37.500");
         assert_eq!(f[13], "288.000");
         let bike = "PCJ600          200.0  0.8 2.1 1.1 0.0 0.05 -0.1 103 1.4  0.85 0.48 5 190.0 35.0 R P 15.0  0.50 0 30.0  1.2  0.15 0.0  0.10 10000 0.20 -0.10 0.55 0.0		10000		1  1";
-        assert!(retune_line(bike).is_none());
-        assert!(retune_line("; comment").is_none());
+        assert!(retune_line(bike, true, false).is_none());
+        assert!(retune_line("; comment", true, false).is_none());
+        // faster only: top speed up to 260 with more pull, grip and brakes as they were
+        let t = retune_line(&car.replace("240.0 30.0", "160.0 20.0"), false, true).unwrap();
+        let f: Vec<&str> = t.split_whitespace().collect();
+        assert_eq!(f[13], "260.000");
+        assert_eq!(f[14], "25.495");
+        assert_eq!(f[9], "0.80");
+        assert_eq!(f[19], "0");
+    }
+
+    #[test]
+    fn update_only_when_newer_and_from_our_releases() {
+        const JSON: &str = r#"[{"tag_name":"v0.3.2","assets":[{"browser_download_url":"https://github.com/P1tak4s/vc-sa-coop/releases/download/v0.3.2/VC-SA-Coop-0.3.2-windows-x64.zip"}],"body":"notes\r\nSHA-256 of the zip: `7079C543A50068CAA6C19FCED74C070FF0F4DB4D336A37E6394CFB8E4E8DB55C`"}]"#;
+        let u = find_update(JSON, "0.3.1").expect("newer");
+        assert_eq!(u.version, "0.3.2");
+        assert!(find_update(JSON, "0.3.2").is_none());
+        assert!(find_update(JSON, "0.10.0").is_none()); // numbers, not text
+        assert!(find_update(&JSON.replace("github.com/P1tak4s", "github.com/someone"), "0.3.1").is_none());
+        assert!(find_update(&JSON.replace("SHA-256 of the zip", "hash"), "0.3.1").is_none());
+        assert!(find_update(&JSON.replace("7079C5", "ZZZZZZ"), "0.3.1").is_none());
     }
 }

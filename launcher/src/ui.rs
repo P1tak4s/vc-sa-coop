@@ -42,7 +42,9 @@ pub struct App {
     games: [Option<PathBuf>; 2],
     graphics: usize,
     handling: bool,
+    fast: bool,
     reshade: bool,
+    upd: Arc<Mutex<Upd>>,
     work: Arc<Mutex<Work>>,
     log: Arc<Mutex<Vec<(bool, String)>>>,
     art: [Option<(Option<egui::TextureHandle>, Option<egui::TextureHandle>)>; 2],
@@ -207,7 +209,9 @@ impl App {
             games,
             graphics: 2,
             handling: false, // 11-15: off by default, the tuned cars felt slow and loose in the first real test
+            fast: false,
             reshade: true,
+            upd: Arc::new(Mutex::new(Upd::Idle)),
             work: Arc::new(Mutex::new(Work::Idle)),
             log: Arc::new(Mutex::new(vec![])),
             art: [None, None],
@@ -218,6 +222,14 @@ impl App {
             msg: vec![],
         };
         app.read_current();
+        if let Ok(me) = std::env::current_exe() {
+            let _ = std::fs::remove_file(me.with_extension("exe.old")); // left by the last update
+        }
+        start_update(app.upd.clone(), cc.egui_ctx.clone());
+        // just updated: put the new mod files into the game too (says so if the game is running)
+        if std::env::args().any(|a| a == "--updated") && app.games[app.which].as_ref().is_some_and(|d| installed(&GAMES[app.which], d)) {
+            app.run(false, &cc.egui_ctx);
+        }
         app
     }
 
@@ -227,7 +239,11 @@ impl App {
         if let Some(dir) = &self.games[self.which] {
             if installed(g, dir) {
                 self.graphics = graphics_level(g).unwrap_or(1);
-                self.handling = handling_pak(dir).is_some_and(|p| p.is_file());
+                let pak = handling_pak(dir).is_some_and(|p| p.is_file());
+                let saved = load_settings(g);
+                self.fast = pak && saved.is_some_and(|s| s.fast);
+                // a pak from before settings.txt existed was the "better" one
+                self.handling = pak && saved.map_or(true, |s| s.grip || !s.fast);
                 self.reshade = reshade_on(dir) == Some(true);
             }
         }
@@ -236,7 +252,8 @@ impl App {
     fn run(&self, remove: bool, ctx: &egui::Context) {
         let Some(dir) = self.games[self.which].clone() else { return };
         let (work, log, ctx) = (self.work.clone(), self.log.clone(), ctx.clone());
-        let (which, graphics, handling, reshade) = (self.which, self.graphics, self.handling, self.reshade);
+        let s = Settings { gfx: self.graphics, grip: self.handling, fast: self.fast, reshade: self.reshade };
+        let which = self.which;
         log.lock().unwrap().clear();
         *work.lock().unwrap() = Work::Busy(if remove { "Removing..." } else { "Installing..." });
         std::thread::spawn(move || {
@@ -263,21 +280,8 @@ impl App {
                         return false;
                     }
                 }
-                if graphics_level(g).is_some() {
-                    match set_graphics(g, graphics) {
-                        Ok(l) => push(true, l),
-                        Err(e) => push(false, e),
-                    }
-                }
-                if is_vc(g) {
-                    match set_handling(g, &dir, handling) {
-                        Ok(l) => push(true, l),
-                        Err(e) => push(false, e),
-                    }
-                }
-                match set_reshade(&dir, reshade) {
-                    Ok(l) => push(true, l),
-                    Err(e) => push(false, e),
+                for (ok, l) in apply_settings(g, &dir, s) {
+                    push(ok, l);
                 }
                 true
             })();
@@ -325,7 +329,17 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(500));
         let work = self.work.lock().unwrap().clone();
-        let busy = matches!(work, Work::Busy(_));
+        let upd = self.upd.lock().unwrap().clone();
+        // updated and nothing running: start the new version in our place
+        if let (Upd::Done(_), false) = (&upd, matches!(work, Work::Busy(_))) {
+            if let Ok(me) = std::env::current_exe() {
+                if std::process::Command::new(me).arg("--updated").spawn().is_ok() {
+                    std::process::exit(0);
+                }
+            }
+            *self.upd.lock().unwrap() = Upd::Failed("Updated. Close this window and open VC-SA-Coop.exe again.".into());
+        }
+        let busy = matches!(work, Work::Busy(_)) || matches!(upd, Upd::Working(_) | Upd::Done(_));
         if self.art[self.which].is_none() {
             self.art[self.which] = Some(steam_art(ctx, &GAMES[self.which]));
         }
@@ -400,6 +414,7 @@ impl App {
                 }
                 if is_vc(g) {
                     ui.checkbox(&mut self.handling, "Better car handling (faster, more grip, ABS)");
+                    ui.checkbox(&mut self.fast, "Faster cars (every car reaches at least 260 km/h)");
                 }
                 if reshade_on(&dir).is_none() {
                     ui.label(RichText::new("ReShade: the game already has another mod's dxgi.dll.").color(MUTED));
@@ -415,6 +430,7 @@ impl App {
                 "Gameface\\Content\\Paks\\~mods: the co-op menu entry and, if ticked, handling. Both are built from your own game files.",
                 "Documents\\Rockstar Games: graphics lines in Engine.ini and CustomSettings.ini. Your own entries stay untouched.",
                 "No admin rights needed. \"Uninstall\" undoes everything.",
+                "When it starts, this program asks GitHub for a newer version of the mod and updates itself.",
             ] {
                 ui.label(RichText::new(format!("• {t}")).small());
             }
@@ -437,6 +453,18 @@ impl App {
                     });
                 }
             });
+        }
+        match self.upd.lock().unwrap().clone() {
+            Upd::Working(v) | Upd::Done(v) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Updating to v{v}. This takes a few seconds..."));
+                });
+            }
+            Upd::Failed(why) => {
+                ui.label(RichText::new(why).small().color(ACCENT));
+            }
+            Upd::Idle => {}
         }
         ui.add_space(10.0);
         let is_in = installed(g, &dir);

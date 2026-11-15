@@ -90,6 +90,7 @@ pub struct CoopMenu {
     name: String,
     pw: String,
     join_tab: bool,
+    settings_tab: bool,
     fonts_ok: bool,
     last_status: i32,
 }
@@ -182,8 +183,9 @@ impl ImguiRenderLoop for CoopMenu {
             if self.fonts_ok && fonts.len() >= 3 { (Some(fonts[0]), Some(fonts[1]), Some(fonts[2])) } else { (None, None, None) };
         let mut close = false;
         let mut go = false;
-        let mut tab_click: Option<bool> = None;
+        let mut tab_click: Option<usize> = None;
         let join_tab = self.join_tab;
+        let settings_tab = self.settings_tab;
         let busy = matches!(crate::status_code(), 1 | 2);
         let can = !busy && !self.name.trim().is_empty();
         let st = status_text();
@@ -200,16 +202,16 @@ impl ImguiRenderLoop for CoopMenu {
                 let dl = ui.get_window_draw_list();
                 let origin = ui.cursor_screen_pos();
                 // ---- tabs (Beckett, like "controls / gameplay / graphics")
-                let tab_w = w / 2.0;
+                let tab_w = w / 3.0;
                 let tab_h = ROW_H * 1.15;
-                for (i, label) in ["host", "join"].iter().enumerate() {
-                    let on = (i == 1) == join_tab;
+                for (i, label) in ["host", "join", "settings"].iter().enumerate() {
+                    let on = if settings_tab { i == 2 } else { i < 2 && (i == 1) == join_tab };
                     let p0 = [origin[0] + tab_w * i as f32, origin[1]];
                     let p1 = [p0[0] + tab_w - 4.0, p0[1] + tab_h];
                     dl.add_rect(p0, p1, if on { TAB_ON } else { TAB_OFF }).filled(true).build();
                     ui.set_cursor_screen_pos(p0);
                     if ui.invisible_button(format!("tab{i}"), [tab_w - 4.0, tab_h]) {
-                        tab_click = Some(i == 1);
+                        tab_click = Some(i);
                     }
                     let _f = tab_font.map(|f| ui.push_font(f));
                     let ts = ui.calc_text_size(label);
@@ -230,6 +232,63 @@ impl ImguiRenderLoop for CoopMenu {
                     dl.add_text([p0[0] + 26.0, y + (ROW_H - ts[1]) / 2.0], [1.0, 1.0, 1.0, 1.0], label);
                     hover && ui.is_mouse_clicked(imgui::MouseButton::Left)
                 };
+
+                // ---- settings: the launcher's choices; they change game files, so they apply after the game closes
+                if settings_tab {
+                    let before = crate::modsettings::get();
+                    let mut o = before;
+                    let value = |y: f32, text: &str| {
+                        let ts = ui.calc_text_size(text);
+                        dl.add_text([origin[0] + w - ts[0] - 30.0, y + (ROW_H - ts[1]) / 2.0], [1.0, 1.0, 1.0, 1.0], text);
+                    };
+                    let on_off = |on: bool| if on { "<  On  >" } else { "<  Off  >" };
+                    let mut idx = 0;
+                    if row_bg(y, idx, "Graphics") {
+                        o.gfx = (o.gfx + 1) % crate::modsettings::GFX.len() as u8;
+                    }
+                    value(y, &format!("<  {}  >", crate::modsettings::GFX[o.gfx as usize]));
+                    y += ROW_H;
+                    idx += 1;
+                    if crate::game::current().kind == crate::game::Kind::Vc {
+                        if row_bg(y, idx, "Better car handling") {
+                            o.grip = !o.grip;
+                        }
+                        value(y, on_off(o.grip));
+                        y += ROW_H;
+                        idx += 1;
+                        if row_bg(y, idx, "Faster cars (260 km/h)") {
+                            o.fast = !o.fast;
+                        }
+                        value(y, on_off(o.fast));
+                        y += ROW_H;
+                        idx += 1;
+                    }
+                    if row_bg(y, idx, "ReShade colors") {
+                        o.reshade = !o.reshade;
+                    }
+                    value(y, on_off(o.reshade));
+                    y += ROW_H;
+                    idx += 1;
+                    row_bg(y, idx, "");
+                    {
+                        let _s = small_font.map(|f| ui.push_font(f));
+                        let line = if crate::modsettings::CHANGED.load(Ordering::SeqCst) {
+                            "Saved. Applied when you close the game; you'll see it next time you play."
+                        } else {
+                            "Changes apply after a game restart. Pick the same as your friend."
+                        };
+                        dl.add_text([origin[0] + 26.0, y + 20.0], [0.98, 0.90, 0.40, 1.0], line);
+                    }
+                    y += ROW_H;
+                    idx += 1;
+                    if row_bg(y, idx, "Back") {
+                        close = true;
+                    }
+                    if o != before {
+                        crate::modsettings::set(o);
+                    }
+                    return;
+                }
 
                 row_bg(y, 0, "Session name");
                 ui.set_cursor_screen_pos([field_x, y + (ROW_H - ui.frame_height()) / 2.0]);
@@ -311,9 +370,12 @@ impl ImguiRenderLoop for CoopMenu {
                 }
             });
         if let Some(t) = tab_click {
-            self.join_tab = t;
+            self.settings_tab = t == 2;
+            if t < 2 {
+                self.join_tab = t == 1;
+            }
         }
-        if go && can {
+        if go && can && !self.settings_tab {
             crate::start_steam_session(!self.join_tab, self.name.trim().to_string(), self.pw.clone());
         }
         // a session that just connected: back to the game, like Saints Row 2
