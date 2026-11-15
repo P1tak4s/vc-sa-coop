@@ -43,6 +43,7 @@ pub struct App {
     graphics: usize,
     handling: bool,
     fast: bool,
+    tough: bool,
     reshade: bool,
     upd: Arc<Mutex<Upd>>,
     work: Arc<Mutex<Work>>,
@@ -210,6 +211,7 @@ impl App {
             graphics: 2,
             handling: false, // 11-15: off by default, the tuned cars felt slow and loose in the first real test
             fast: false,
+            tough: false,
             reshade: true,
             upd: Arc::new(Mutex::new(Upd::Idle)),
             work: Arc::new(Mutex::new(Work::Idle)),
@@ -242,6 +244,7 @@ impl App {
                 let pak = handling_pak(dir).is_some_and(|p| p.is_file());
                 let saved = load_settings(g);
                 self.fast = pak && saved.is_some_and(|s| s.fast);
+                self.tough = saved.is_some_and(|s| s.tough);
                 // a pak from before settings.txt existed was the "better" one
                 self.handling = pak && saved.map_or(true, |s| s.grip || !s.fast);
                 self.reshade = reshade_on(dir) == Some(true);
@@ -252,7 +255,7 @@ impl App {
     fn run(&self, remove: bool, ctx: &egui::Context) {
         let Some(dir) = self.games[self.which].clone() else { return };
         let (work, log, ctx) = (self.work.clone(), self.log.clone(), ctx.clone());
-        let s = Settings { gfx: self.graphics, grip: self.handling, fast: self.fast, reshade: self.reshade };
+        let s = Settings { gfx: self.graphics, grip: self.handling, fast: self.fast, reshade: self.reshade, tough: self.tough };
         let which = self.which;
         log.lock().unwrap().clear();
         *work.lock().unwrap() = Work::Busy(if remove { "Removing..." } else { "Installing..." });
@@ -415,6 +418,7 @@ impl App {
                 if is_vc(g) {
                     ui.checkbox(&mut self.handling, "Better car handling (faster, more grip, ABS)");
                     ui.checkbox(&mut self.fast, "Faster cars (every car reaches at least 260 km/h)");
+                    ui.checkbox(&mut self.tough, "Tougher enemies (armed enemies aim better and take more hits)");
                 }
                 if reshade_on(&dir).is_none() {
                     ui.label(RichText::new("ReShade: the game already has another mod's dxgi.dll.").color(MUTED));

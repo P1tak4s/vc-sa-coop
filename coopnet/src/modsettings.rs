@@ -12,6 +12,7 @@ pub struct Opts {
     pub grip: bool,
     pub fast: bool,
     pub reshade: bool,
+    pub tough: bool, // armed enemies aim better and take more hits; works at once (the script asks coop_setting(2))
 }
 
 pub const GFX: [&str; 4] = ["Original", "Simple", "Nice", "Maximum"];
@@ -24,7 +25,7 @@ fn read() -> Opts {
     let t = file().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
     let flag = |k: &str| t.lines().any(|l| l.trim() == format!("{k}=1"));
     let gfx = t.lines().find_map(|l| l.trim().strip_prefix("gfx=")?.parse::<u8>().ok()).unwrap_or(1).min(3);
-    Opts { gfx, grip: flag("grip"), fast: flag("fast"), reshade: flag("reshade") }
+    Opts { gfx, grip: flag("grip"), fast: flag("fast"), reshade: flag("reshade"), tough: flag("tough") }
 }
 
 fn state() -> &'static Mutex<Option<Opts>> {
@@ -41,13 +42,17 @@ pub static CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Save a change and make sure the helper will apply it after the game closes.
 pub fn set(o: Opts) {
-    *state().lock().unwrap() = Some(o);
     let Some(f) = file() else { return };
     if let Some(dir) = f.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let text = format!("gfx={}\ngrip={}\nfast={}\nreshade={}\n", o.gfx, o.grip as u8, o.fast as u8, o.reshade as u8);
+    let before = state().lock().unwrap().replace(o);
+    let text = format!("gfx={}\ngrip={}\nfast={}\nreshade={}\ntough={}\n", o.gfx, o.grip as u8, o.fast as u8, o.reshade as u8, o.tough as u8);
     if std::fs::write(&f, text).is_err() {
+        return;
+    }
+    // only tougher enemies changed: nothing for the helper to do
+    if before.is_some_and(|b| Opts { tough: o.tough, ..b } == o) {
         return;
     }
     if CHANGED.swap(true, Ordering::SeqCst) {

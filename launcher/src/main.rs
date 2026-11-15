@@ -387,6 +387,7 @@ pub struct Settings {
     pub grip: bool,
     pub fast: bool,
     pub reshade: bool,
+    pub tough: bool,
 }
 
 fn settings_file(g: &GameInfo) -> PathBuf {
@@ -397,13 +398,13 @@ fn load_settings(g: &GameInfo) -> Option<Settings> {
     let t = std::fs::read_to_string(settings_file(g)).ok()?;
     let flag = |k: &str| t.lines().any(|l| l.trim() == format!("{k}=1"));
     let gfx = t.lines().find_map(|l| l.trim().strip_prefix("gfx=")?.parse::<usize>().ok())?.min(GRAPHICS.len() - 1);
-    Some(Settings { gfx, grip: flag("grip"), fast: flag("fast"), reshade: flag("reshade") })
+    Some(Settings { gfx, grip: flag("grip"), fast: flag("fast"), reshade: flag("reshade"), tough: flag("tough") })
 }
 
 fn save_settings(g: &GameInfo, s: Settings) {
     let dir = data_dir(g);
     let _ = std::fs::create_dir_all(&dir);
-    let text = format!("gfx={}\ngrip={}\nfast={}\nreshade={}\n", s.gfx, s.grip as u8, s.fast as u8, s.reshade as u8);
+    let text = format!("gfx={}\ngrip={}\nfast={}\nreshade={}\ntough={}\n", s.gfx, s.grip as u8, s.fast as u8, s.reshade as u8, s.tough as u8);
     let _ = std::fs::write(settings_file(g), text);
 }
 

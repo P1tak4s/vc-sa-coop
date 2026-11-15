@@ -22,7 +22,7 @@ try {
   for (const name of ["coop_start", "coop_code", "coop_status", "coop_slot", "coop_send", "coop_get", "coop_revive",
                       "coop_take_revived", "coop_name", "coop_event_send", "coop_event_poll", "coop_ents_send",
                       "coop_ents_get", "coop_is_host", "coop_my_skin", "coop_set_partner", "coop_warp_passenger",
-                      "coop_track", "coop_forget", "coop_take_tracked", "coop_tag", "coop_hud", "coop_note",
+                      "coop_track", "coop_forget", "coop_take_tracked", "coop_tag", "coop_hud", "coop_note", "coop_setting",
                       "coop_world_send", "coop_world_get", "coop_flag"]) {
     api[name] = Memory.Fn.X64(lib.getProcedure(name));
   }
@@ -1211,6 +1211,40 @@ function missionHandles() {
   return out;
 }
 // handles that are players, friends' copies or copies of anything else: never shared, never cleared
+// ---- tougher enemies (a mod setting: launcher or the co-op menu's Settings tab, works at once) ------------------
+// Armed people in your own game aim better and take more hits. Police, medics and firemen, friends and every copy of
+// a friend's world are left alone (their owner's game decides about those).
+const TOUGH = { accuracy: 75, healthX: 1.5, healthMax: 250 };
+const toughDone = new Set();
+let toughAt = 0, toughErr = false;
+function toughTick(me, t) {
+  if (t - toughAt < 1000) return;
+  toughAt = t;
+  try {
+    if (api.coop_setting(2) !== 1) return;
+    const skip = new Set([+me]);
+    for (const r of remotes) if (r) skip.add(+r.ped);
+    for (const p of proxies.values()) skip.add(+p.ent);
+    for (const p of worldProxies.values()) { skip.add(+p.ent); if (p.driver) skip.add(+p.driver); }
+    const mp = me.getCoordinates();
+    poolEach(A.pedPool, A.pedSize, (h, p) => {
+      if (skip.has(h) || toughDone.has(h)) return;
+      const model = Memory.ReadI16(p + S.modelIndex, false, false);
+      if (model >= 1 && model <= 6) return; // cop, SWAT, FBI, army, medic, fireman
+      if (dist2(readVec(p + E.pos), mp) > 60 * 60) return;
+      try {
+        const c = new Char(h);
+        const hp = c.getHealth();
+        if (hp <= 0 || c.getCurrentWeapon() === 0) return; // fists only: not a gunman
+        c.setAccuracy(TOUGH.accuracy);
+        c.setHealth(Math.min(TOUGH.healthMax, Math.round(hp * TOUGH.healthX)));
+        toughDone.add(h);
+      } catch (e) {}
+    });
+    if (toughDone.size > 500) toughDone.clear(); // handles are reused; forget old ones now and then
+  } catch (e) { if (!toughErr) { toughErr = true; log(`[vc-coop] tougher enemies: ${e}`); } }
+}
+
 function ownedHandles(me) {
   const out = missionHandles();
   out.add(+me);
@@ -1538,6 +1572,7 @@ while (true) {
   trace("world"); tellWorld(api.coop_slot(), t);
   trace("events"); hearWorld();
   trace("missions"); missionsTick(t);
+  toughTick(me, t);
   trace("shared"); sharedWorldTick(me, t);
   cutTick(me, t);
   trace("report"); report(me, t);

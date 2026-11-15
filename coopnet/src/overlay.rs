@@ -263,6 +263,14 @@ impl ImguiRenderLoop for CoopMenu {
                         y += ROW_H;
                         idx += 1;
                     }
+                    if crate::game::current().kind == crate::game::Kind::Vc {
+                        if row_bg(y, idx, "Tougher enemies") {
+                            o.tough = !o.tough;
+                        }
+                        value(y, on_off(o.tough));
+                        y += ROW_H;
+                        idx += 1;
+                    }
                     if row_bg(y, idx, "ReShade colors") {
                         o.reshade = !o.reshade;
                     }
@@ -275,7 +283,7 @@ impl ImguiRenderLoop for CoopMenu {
                         let line = if crate::modsettings::CHANGED.load(Ordering::SeqCst) {
                             "Saved. Applied when you close the game; you'll see it next time you play."
                         } else {
-                            "Changes apply after a game restart. Pick the same as your friend."
+                            "Tougher enemies changes at once. The rest applies after a game restart."
                         };
                         dl.add_text([origin[0] + 26.0, y + 20.0], [0.98, 0.90, 0.40, 1.0], line);
                     }
